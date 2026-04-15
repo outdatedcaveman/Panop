@@ -1,0 +1,14 @@
+node_modules/
+venv/
+build/
+dist/
+__pycache__/
+*.exe
+panop_output/
+.env
+*.json
+!panop-extension/manifest.json
+!panop-gui/package.json
+panop-server/panop_output/
+*.log
+.DS_Store
