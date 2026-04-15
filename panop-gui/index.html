@@ -247,11 +247,11 @@
                         <div class="cat-col"><label>Max Age (Days Limits)</label><input type="text" placeholder="Leave empty for infinity" id="cat_age_${idx}" value="${cat.max_age_days || ''}"></div>
                     </div>
                     <div class="cat-row">
-                        <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><textarea id="cat_dom_${idx}" rows="1">${(cat.domain_keywords || []).join(', ')}</textarea></div>
+                        <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><input type="text" id="cat_dom_${idx}" value="${(cat.domain_keywords || []).join(', ')}" /></div>
                     </div>
                     <div class="cat-row">
-                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><textarea id="cat_req_${idx}" rows="1">${(cat.body_required || []).join(', ')}</textarea></div>
-                        <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><textarea id="cat_for_${idx}" rows="1">${(cat.body_forbidden || []).join(', ')}</textarea></div>
+                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><input type="text" id="cat_req_${idx}" value="${(cat.body_required || []).join(', ')}" /></div>
+                        <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><input type="text" id="cat_for_${idx}" value="${(cat.body_forbidden || []).join(', ')}" /></div>
                     </div>
                 </div>`;
             });
@@ -402,9 +402,9 @@
         }
 
         async function triggerSweep() {
-            document.getElementById('sweepBtn').innerText = "EXECUTING...";
+            document.getElementById('sweepBtn').innerText = "EXECUTING... (Reading Android)";
             await fetch('http://127.0.0.1:8000/api/v1/fetch_now', { method: 'POST' });
-            setTimeout(async () => { await loadHistory(); document.getElementById('sweepBtn').innerText = "FETCH NOW FROM ANDROID"; }, 6000);
+            setTimeout(async () => { await loadHistory(); document.getElementById('sweepBtn').innerText = "FETCH NOW FROM ANDROID"; }, 10000);
         }
 
         async function openSysFolder(type) {

@@ -149,7 +149,7 @@ def run_adb_sweep():
             subprocess.run([adb_exe, "connect", ip], capture_output=True)
             
         subprocess.run([adb_exe, "forward", "tcp:9222", "localabstract:chrome_devtools_remote"], capture_output=True)
-        resp = requests.get("http://127.0.0.1:9222/json/list", timeout=5)
+        resp = requests.get("http://127.0.0.1:9222/json/list", timeout=300)
         if resp.status_code != 200: return
         tabs = resp.json()
         history = load_history()
