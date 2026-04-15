@@ -9,6 +9,7 @@ function createWindow () {
     width: 900,
     height: 700,
     backgroundColor: '#0f172a',
+    icon: path.join(__dirname, 'panop.ico'),
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
