@@ -239,9 +239,14 @@ def run_adb_sweep():
                 save_history(history)
                 
                 tab_id = tab.get("id")
-                if tab_id: requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=2)
+                if tab_id: 
+                    try:
+                        requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
+                    except Exception:
+                        pass
 
-    except Exception: pass
+    except Exception as e:
+        pass
 
 def adb_loop():
     while True:
