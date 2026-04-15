@@ -21,14 +21,7 @@ function createWindow () {
   win.loadFile('index.html')
 }
 
-ipcMain.on('open-folder', (event, targetFolder) => {
-    let targetPath;
-    if (targetFolder === 'RIS' || targetFolder === 'ARTICLES' || targetFolder === 'BOOKS') {
-        const outDir = targetFolder === 'RIS' ? 'ris' : (targetFolder === 'ARTICLES' ? 'Android Articles' : 'Android Books');
-        targetPath = path.join(__dirname, '..', 'panop-server', 'panop_output', outDir);
-    } else {
-        targetPath = path.join(__dirname, '..', 'panop-server', 'panop_output');
-    }
+ipcMain.on('open-local-path', (event, targetPath) => {
     shell.openPath(targetPath);
 });
 

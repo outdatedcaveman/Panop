@@ -1,256 +1,219 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Panop Control Center</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-    body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; display: flex; height: 100vh; overflow: hidden; }
-    
-    .sidebar { width: 220px; background: #1e293b; padding: 20px 0; border-right: 1px solid #334155; }
-    .sidebar h2 { color: #38bdf8; text-align: center; margin-top: 0; font-weight: 800; letter-spacing: -1px;}
-    .nav-item { padding: 15px 20px; cursor: pointer; color: #94a3b8; font-weight: 600; transition: 0.2s;}
-    .nav-item:hover, .nav-item.active { background: #334155; color: #38bdf8; border-left: 4px solid #38bdf8; }
-    
-    .content { flex: 1; padding: 40px; overflow-y: auto; }
-    .panel { display: none; }
-    .panel.active { display: block; }
-    
-    h1 { margin-top: 0; color: #f8fafc; font-size: 28px; border-bottom: 2px solid #334155; padding-bottom: 10px;}
-    .card { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 20px;}
-    
-    .status-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; background: #334155; color:#94a3b8; }
-    .status-badge.online { background: #166534; color: #4ade80; }
-    
-    .form-group { margin-bottom: 15px; }
-    .form-group label { display: block; margin-bottom: 5px; color: #cbd5e1; font-weight: 600; font-size: 14px;}
-    input[type="text"] { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 6px; box-sizing: border-box;}
-    input[type="text"]:focus { outline: none; border-color: #38bdf8; }
-    
-    .checkbox-group { display: flex; align-items: center; margin-bottom: 15px; }
-    .checkbox-group input { margin-right: 10px; width: 18px; height: 18px;}
-    
-    button { background: #38bdf8; color: #0f172a; border: none; padding: 10px 20px; cursor: pointer; border-radius: 6px; font-weight: bold; transition: all 0.2s;}
-    button:hover { background: #0ea5e9; }
-    button.save-btn { background: #10b981; color: white; }
-    button.save-btn:hover { background: #059669; }
-    
-    .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .tag { background: #334155; padding: 5px 12px; border-radius: 20px; font-size: 13px; display: flex; align-items: center;}
-    .tag span { margin-left: 8px; cursor: pointer; color: #f87171; font-weight: bold;}
-    
-    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-    th, td { text-align: left; padding: 12px; border-bottom: 1px solid #334155; }
-    th { color: #94a3b8; font-size: 14px; }
-  </style>
+    <title>Panop Control Center</title>
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #000000; color: #f1f5f9; display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 250px; background: #0a0a0a; border-right: 1px solid #222; padding: 20px 0; display: flex; flex-direction: column; }
+        .brand { text-align: center; color: #ef4444; font-size: 24px; font-weight: 800; letter-spacing: 2px; margin-bottom: 40px; }
+        .nav-item { padding: 15px 25px; color: #94a3b8; cursor: pointer; transition: 0.3s; font-weight: 500; border-left: 3px solid transparent; }
+        .nav-item:hover { background: #1a1a1a; color: #fff; }
+        .nav-item.active { background: #111; color: #ef4444; border-left: 3px solid #ef4444; }
+        
+        .main-content { flex: 1; overflow-y: auto; padding: 40px; background: #111111; }
+        .panel { display: none; animation: fadeIn 0.3s; }
+        .panel.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        h1 { color: #fff; border-bottom: 2px solid #222; padding-bottom: 10px; font-size: 28px; font-weight: 300;}
+        .card { background: #0a0a0a; border: 1px solid #222; border-left: 4px solid #ef4444; border-radius: 6px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+        
+        button { background: #ef4444; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:hover { background: #b91c1c; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
+        button.secondary { background: #222; color: #ccc;}
+        button.secondary:hover { background: #333; color: white;}
+
+        input, textarea { width: 100%; box-sizing: border-box; background: #111; border: 1px solid #333; color: white; padding: 12px; border-radius: 4px; margin-top: 8px; font-family: monospace; }
+        input:focus, textarea:focus { outline: none; border-color: #ef4444; }
+        label { font-size: 13px; color: #94a3b8; font-weight: 600;}
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        table th, table td { padding: 12px; text-align: left; border-bottom: 1px solid #222; }
+        table th { color: #ef4444; font-weight: 600; text-transform: uppercase; font-size: 13px; }
+        table tr:hover { background: #151515; }
+        
+        .cat-row { display: flex; gap: 10px; margin-bottom: 15px; align-items: flex-start; }
+        .cat-col { flex: 1; }
+    </style>
 </head>
 <body>
+    <div class="sidebar">
+        <div class="brand">PANOP</div>
+        <div class="nav-item active" onclick="switchPanel('dash')">Dashboard</div>
+        <div class="nav-item" onclick="switchPanel('categories')">Routing Categories</div>
+        <div class="nav-item" onclick="switchPanel('network')">Network & Devices</div>
+        <div class="nav-item" onclick="switchPanel('export')">Exports & Drives</div>
+    </div>
+    
+    <div class="main-content">
+        <!-- Dashboard -->
+        <div id="dash" class="panel active">
+            <h1>Activity Monitor</h1>
+            <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <h3 style="margin:0;">Status: <span id="serverBadge" style="color:#ef4444;">Connecting...</span></h3>
+                    <p style="color:#888; margin-top:5px; font-size: 13px;">Next autonomous sweep cycle executes mathematically every 6 hours.</p>
+                </div>
+                <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
+            </div>
+            
+            <div class="card">
+                <h3>Live Capture History Routing</h3>
+                <table id="historyTable">
+                    <tr><th>Title</th><th>Category</th><th>Captured At</th></tr>
+                </table>
+            </div>
+        </div>
 
-  <div class="sidebar">
-    <h2>PANOP</h2>
-    <div class="nav-item active" onclick="switchTab('dashboard')">Dashboard</div>
-    <div class="nav-item" onclick="switchTab('rules')">Categorization Rules</div>
-    <div class="nav-item" onclick="switchTab('history')">Capture History</div>
-  </div>
+        <!-- Categories -->
+        <div id="categories" class="panel">
+            <h1>Routing Ontology</h1>
+            <p style="color:#888; font-size: 14px;">Define precisely how you want Panop to classify your tabs. Adjust destinations and apply strict algorithmic filtration rules.</p>
+            <div id="categoriesWrapper"></div>
+            <button onclick="addCategory()" style="margin-bottom:20px;" class="secondary">+ Add New Category</button>
+            <br>
+            <button onclick="saveCategories()">Save All Categories</button>
+        </div>
 
-  <div class="content">
-    <!-- DASHBOARD -->
-    <div id="dashboard" class="panel active">
-      <h1>Backend Status <span id="serverBadge" class="status-badge">Checking...</span></h1>
-      <div class="card" style="border-left: 4px solid #38bdf8;">
-        <h3>How Android ADB Pipeline Works</h3>
-        <p>1. Panop silently polls your Android Chrome via local secure loopback every strictly <strong>6 hours</strong>.<br>
-           2. Live URLs are fetched safely via `localhost:9222`.<br>
-           3. Backend determines if URL matches "Articles" or "Books" based on your Rules.<br>
-           4. Bookmarks are logged, and Zotero .RIS references are magically generated.<br>
-           5. <b>Auto-Closure Rule applies</b>: Parsed tabs are permanently deleted from your phone silently via DevTools.<br>
-           <i>*Works universally over USB, or securely across recognized Wi-Fi Networks with RSA Fingerprint pairing.</i></p>
-      </div>
-      <div style="display: flex; gap: 10px;">
-         <button onclick="checkServer()">Ping Server</button>
-         <button style="background:#f472b6; color:#0f172a;" onclick="openExport('ROOT')">Open Panop Export Drive</button>
-      </div>
+        <!-- Network -->
+        <div id="network" class="panel">
+            <h1>Wireless Configuration</h1>
+            <div class="card">
+                <h3>Saved Wi-Fi IP Addresses</h3>
+                <p style="color:#aaa; font-size:13px;">Enter ADB Wireless IP:Port addresses. Separate by commas (e.g., 192.168.1.55:40532). Connecting directly via USB requires zero setup.</p>
+                <textarea id="wirelessIps" rows="4"></textarea>
+                <button style="margin-top:15px;" onclick="saveNetwork()">Save Network Preferences</button>
+            </div>
+        </div>
+
+        <!-- Export -->
+        <div id="export" class="panel">
+            <h1>Drives & Exports</h1>
+            <div class="card">
+                <h3>System Roots</h3>
+                <p style="color:#aaa; font-size:13px;">Click below to natively open your internal output drives directly via Windows Explorer.</p>
+                <button onclick="openSysFolder('root')" class="secondary">Open Output Root</button>
+                <button onclick="openSysFolder('ris')" class="secondary" style="margin-left:10px;">Zotero .RIS Batches</button>
+            </div>
+        </div>
     </div>
 
-    <!-- RULES -->
-    <div id="rules" class="panel">
-      <h1>Routing & Categories</h1>
-      
-      <div class="card">
-        <h3>Article Domains</h3>
-        <p style="font-size: 13px; color: #94a3b8;">Routed to "Android Articles" bookmark folder. Appended to articles_week_XX.ris</p>
-        <div class="form-group" style="display:flex; gap:10px;">
-            <input type="text" id="newArticleDomain" placeholder="e.g. jstor.org">
-            <button onclick="addDomain('articles')">Add</button>
-        </div>
-        <div class="tag-list" id="articlesList"></div>
-      </div>
-
-      <div class="card">
-        <h3>Book Domains</h3>
-        <p style="font-size: 13px; color: #94a3b8;">Routed to "Android Books" bookmark folder. Appended to books_week_XX.ris</p>
-        <div class="form-group" style="display:flex; gap:10px;">
-            <input type="text" id="newBookDomain" placeholder="e.g. gutenberg.org">
-            <button onclick="addDomain('books')">Add</button>
-        </div>
-        <div class="tag-list" id="booksList"></div>
-      </div>
-      
-      <div class="card" style="border-left: 4px solid #f43f5e;">
-        <h3>Wireless ADB Networks (Optional)</h3>
-        <p style="font-size:12px; color:#94a3b8; margin-top:0;"><i>Provide the IP:Port from your phone's 'Wireless Debugging' screen (e.g. 192.168.1.15:40555). Separate multiples with commas. Android generates random ports so update it when changing networks. USB needs no configuration.</i></p>
-        <textarea id="wirelessIps" rows="3"></textarea>
-      </div>
-
-      <div class="card">
-        <h3>Global Filtering Toggles</h3>
-        <div class="checkbox-group">
-            <input type="checkbox" id="trustPdfs">
-            <label for="trustPdfs" style="margin:0;">Always capture .PDF links (Routed to Articles)</label>
-        </div>
-        <button class="save-btn" onclick="saveConfig()">Save All Config Settings</button>
-      </div>
-    </div>
-
-    <!-- HISTORY -->
-    <div id="history" class="panel">
-      <h1>Processed Library</h1>
-      <div class="card">
-      <button onclick="loadHistory()" style="margin-bottom: 10px;">Refresh Library</button>
-        <table id="historyTable">
-            <thead>
-                <tr>
-                    <th>Title</th>
-                    <th>Category</th>
-                    <th>Date Captured</th>
-                </tr>
-            </thead>
-            <tbody>
-                <!-- Rows injected via JS -->
-            </tbody>
-        </table>
-      </div>
-    </div>
-
-  </div>
-
-  <script>
-    let currentConfig = { articles_domains: [], books_domains: [], rules: {} };
-
-    // --- Tab Management ---
-    function switchTab(tabId) {
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-      
-      document.getElementById(tabId).classList.add('active');
-      event.currentTarget.classList.add('active');
-      
-      if(tabId === 'rules') loadConfig();
-      if(tabId === 'history') loadHistory();
-    }
-
-    // --- Server Ping ---
-    async function checkServer() {
-      const badge = document.getElementById('serverBadge');
-      badge.textContent = 'Probing...';
-      badge.className = 'status-badge';
-      try {
-        const res = await fetch('http://127.0.0.1:8000/docs');
-        if(res.ok) {
-            badge.textContent = 'ONLINE (Port 8000)';
-            badge.classList.add('online');
-            loadConfig(); // Fetch rules implicitly
-        } else throw new Error();
-      } catch (err) {
-        badge.textContent = 'OFFLINE';
-      }
-    }
-
-    // --- Config Management ---
-    async function loadConfig() {
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/v1/config');
-            if(res.ok) {
-                const data = await res.json();
-                currentConfig = data;
-                renderDomains('articles', currentConfig.articles_domains);
-                renderDomains('books', currentConfig.books_domains);
-                
-                if (data.wireless_ips) {
-                   document.getElementById('wirelessIps').value = data.wireless_ips.join(', ');
-                }
-                document.getElementById('trustPdfs').checked = data.rules.trust_all_pdfs;
-            }
-        } catch(e) { console.error("Failed to load config", e); }
-    }
-
-    async function saveConfig() {
-        currentConfig.rules.trust_all_pdfs = document.getElementById('trustPdfs').checked;
-        currentConfig.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s => s.trim()).filter(s => s);
-        try {
-            await fetch('http://127.0.0.1:8000/api/v1/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(currentConfig)
-            });
-            alert("Settings Safely Written to Python Backend!");
-        } catch(e) { alert("Failed to save. Is server running?"); }
-    }
-
-    function renderDomains(type, list) {
-        const container = document.getElementById(type + 'List');
-        container.innerHTML = '';
-        list.forEach((domain, idx) => {
-            container.innerHTML += `<div class="tag">${domain} <span onclick="removeDomain('${type}', ${idx})">&times;</span></div>`;
-        });
-    }
-
-    function addDomain(type) {
-        const inputId = type === 'articles' ? 'newArticleDomain' : 'newBookDomain';
-        const input = document.getElementById(inputId);
-        const val = input.value.trim().toLowerCase();
-        if(val && !currentConfig[`${type}_domains`].includes(val)) {
-            currentConfig[`${type}_domains`].push(val);
-            renderDomains(type, currentConfig[`${type}_domains`]);
-            input.value = '';
-        }
-    }
-
-    function removeDomain(type, idx) {
-        currentConfig[`${type}_domains`].splice(idx, 1);
-        renderDomains(type, currentConfig[`${type}_domains`]);
-    }
-
-    // --- History Management ---
-    function openExport(type) {
+    <script>
         const { ipcRenderer } = require('electron');
-        ipcRenderer.send('open-folder', type);
-    }
-    async function loadHistory() {
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/v1/history');
-            if(res.ok) {
-                const data = await res.json();
-                const tbody = document.querySelector('#historyTable tbody');
-                tbody.innerHTML = '';
-                
-                // Sort by date descending
-                const sorted = Object.values(data).sort((a,b) => new Date(b.date) - new Date(a.date));
-                sorted.forEach(item => {
-                    let catColor = item.category === 'articles' ? '#38bdf8' : '#f472b6';
-                    tbody.innerHTML += `
-                        <tr>
-                            <td style="font-weight:600;">${item.title || "Unknown Title"}</td>
-                            <td><span style="background:#0f172a; padding:4px 8px; border-radius:4px; font-size:12px; color:${catColor}; border:1px solid ${catColor}">${item.category.toUpperCase()}</span></td>
-                            <td style="color:#94a3b8; font-size:14px;">${new Date(item.date).toLocaleString()}</td>
-                        </tr>
-                    `;
-                });
-            }
-        } catch(e) { console.error("Failed to load history"); }
-    }
+        let configData = null;
 
-    // Init
-    checkServer();
-  </script>
+        function switchPanel(id) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            event.currentTarget.classList.add('active');
+        }
+
+        async function init() {
+            try {
+                let res = await fetch('http://127.0.0.1:8000/api/v1/config');
+                configData = await res.json();
+                document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
+                document.getElementById('serverBadge').style.color = "#10b981";
+                renderCategories();
+                document.getElementById('wirelessIps').value = configData.wireless_ips.join(', ');
+                loadHistory();
+            } catch(e) {}
+        }
+
+        function renderCategories() {
+            const wrap = document.getElementById('categoriesWrapper');
+            wrap.innerHTML = '';
+            configData.categories.forEach((cat, idx) => {
+                wrap.innerHTML += `
+                <div class="card">
+                    <div class="cat-row">
+                        <div class="cat-col">
+                            <label>Internal ID</label>
+                            <input type="text" id="cat_id_${idx}" value="${cat.id}" ${cat.id === 'articles' || cat.id === 'books' ? 'readonly' : ''}>
+                        </div>
+                        <div class="cat-col">
+                            <label>Display Name</label>
+                            <input type="text" id="cat_name_${idx}" value="${cat.name}">
+                        </div>
+                        <div class="cat-col">
+                            <label>Destination Output Folder</label>
+                            <input type="text" id="cat_dest_${idx}" value="${cat.dest_folder}">
+                        </div>
+                    </div>
+                    <div class="cat-row">
+                        <div class="cat-col">
+                            <label>Trigger URLs / Required Domains (comma separated)</label>
+                            <textarea id="cat_dom_${idx}" rows="2">${cat.domain_keywords.join(', ')}</textarea>
+                        </div>
+                    </div>
+                    <div style="margin-top:10px; background: #181818; padding: 15px; border-radius: 4px; border: 1px solid #333;">
+                        <div style="display:flex; align-items:center; gap: 10px;">
+                            <input type="checkbox" style="width:auto; margin:0;" id="cat_book_${idx}" ${cat.must_be_book ? 'checked' : ''}>
+                            <label style="color:#ef4444; margin:0; padding:0;"><b>Enforce Strict Algorithm Filtration</b></label>
+                        </div>
+                        <p style="margin: 5px 0 0 0; color:#888; font-size: 12px; padding-left:25px;">
+                            Crucial for Books. If enabled, Panop natively extracts the webpage's body text invisibly and actively sweeps for literary identification keywords (ISBN, Paperback, Hardcover, Edition) to ensure commerce site links (like Amazon skillets & pots) are permanently ignored.
+                        </p>
+                    </div>
+                </div>`;
+            });
+        }
+
+        function addCategory() {
+            configData.categories.push({ id: "new_cat", name: "New Category", dest_folder: "New Items", domain_keywords: [], must_be_book: false });
+            renderCategories();
+        }
+
+        async function saveCategories() {
+            configData.categories.forEach((cat, idx) => {
+                cat.id = document.getElementById(`cat_id_${idx}`).value;
+                cat.name = document.getElementById(`cat_name_${idx}`).value;
+                cat.dest_folder = document.getElementById(`cat_dest_${idx}`).value;
+                cat.domain_keywords = document.getElementById(`cat_dom_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
+                cat.must_be_book = document.getElementById(`cat_book_${idx}`).checked;
+            });
+            await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData) });
+            alert("Categories Successfully Written to Backend Memory");
+        }
+
+        async function saveNetwork() {
+            configData.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s=>s.trim()).filter(s=>s);
+            await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData) });
+            alert("Network Routing Executed");
+        }
+
+        async function loadHistory() {
+            let res = await fetch('http://127.0.0.1:8000/api/v1/history');
+            let j = await res.json();
+            let table = document.getElementById('historyTable');
+            table.innerHTML = '<tr><th>Title</th><th>Category</th><th>Captured At</th></tr>';
+            Object.values(j).reverse().slice(0, 50).forEach(item => {
+                table.innerHTML += `<tr><td>${item.title.substring(0,80)}...</td><td>${item.category}</td><td>${new Date(item.date).toLocaleString()}</td></tr>`;
+            });
+        }
+
+        async function triggerSweep() {
+            document.getElementById('sweepBtn').innerText = "EXECUTING MANUAL SWEEP...";
+            await fetch('http://127.0.0.1:8000/api/v1/fetch_now', { method: 'POST' });
+            setTimeout(async () => {
+                await loadHistory();
+                document.getElementById('sweepBtn').innerText = "FETCH NOW FROM ANDROID";
+            }, 5000);
+        }
+
+        async function openSysFolder(type) {
+            try {
+                let res = await fetch('http://127.0.0.1:8000/api/v1/system_paths');
+                let pathData = await res.json();
+                let finalPath = pathData.output_dir;
+                if (type === 'ris') finalPath += '\\ris';
+                ipcRenderer.send('open-local-path', finalPath);
+            } catch(e) { alert("Backend Offline. Cannot resolve absolute file paths."); }
+        }
+
+        setInterval(init, 30000);
+        init();
+    </script>
 </body>
 </html>
