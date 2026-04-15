@@ -239,11 +239,7 @@ def run_adb_sweep():
                 save_history(history)
                 
                 tab_id = tab.get("id")
-                if tab_id: 
-                    try:
-                        requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
-                    except Exception:
-                        pass
+                # Removed json/close execution to preserve tabs gracefully on Android and prevent data destruction paranoia
 
     except Exception as e:
         pass
