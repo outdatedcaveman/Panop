@@ -44,7 +44,7 @@
         <div class="brand">PANOP</div>
         <div class="nav-item active" onclick="switchPanel('dash')">Live Dashboard</div>
         <div class="nav-item" onclick="switchPanel('categories')">Routing Ontology</div>
-        <div class="nav-item" onclick="switchPanel('network')">Network Integrations</div>
+        <div class="nav-item" onclick="switchPanel('network')">Global Configuration</div>
         <div class="nav-item" onclick="switchPanel('export')">File Exports</div>
     </div>
     
@@ -60,12 +60,10 @@
                 <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
             </div>
             
-            <div style="display:flex; gap:20px; overflow-x:auto; padding-bottom:10px;" id="dashCols">
-                <!-- Columns dynamically injected -->
-            </div>
+            <div style="display:flex; gap:20px; overflow-x:auto; padding-bottom:10px;" id="dashCols"></div>
         </div>
 
-        <!-- Action Bar for Dashboard selection -->
+        <!-- Action Bar -->
         <div id="editActionBar">
             <span style="color:#fff; font-weight:bold;"><span id="selCount">0</span> Items Selected</span>
             <button class="secondary" onclick="deleteSelected()">🗑️ Delete from DB</button>
@@ -80,31 +78,42 @@
         <!-- Categories -->
         <div id="categories" class="panel">
             <h1>Algorithmic Engine Constraints</h1>
-            <p style="color:#aaa; font-size: 14px;">Define advanced body-text keyword constraints. Leaving properties blank loosens the pipeline. Panop AI learns from what you route here to automatically group untagged websites via tf-idf modeling.</p>
+            <p style="color:#aaa; font-size: 14px;">Define advanced configuration. Panop AI learns from what you route here to automatically group untagged websites via tf-idf modeling.</p>
             <div id="categoriesWrapper"></div>
             <button onclick="addCategory()" style="margin-bottom:20px;" class="secondary">+ Add Logical Category</button>
-            <br>
-            <button onclick="saveCategories()" style="background:#10b981;">Save Pipeline Config</button>
+            <button onclick="saveCategories()" style="background:#10b981; float:right;">Save Pipeline Config</button>
         </div>
 
-        <!-- Network -->
+        <!-- Network / Global Config -->
         <div id="network" class="panel">
-            <h1>Wireless Bridge Options</h1>
+            <h1>Global Integration Configuration</h1>
             <div class="card">
-                <h3>Trusted Android Devices</h3>
-                <p style="color:#aaa; font-size:13px;">Enter ADB Wireless IP addresses from Developer Settings. (e.g. 192.168.1.15:44502). Separated by commas.</p>
-                <textarea id="wirelessIps" rows="4"></textarea>
-                <button style="margin-top:15px;" onclick="saveNetwork()">Bind Addresses</button>
+                <h3>Absolute Root Path Directory</h3>
+                <p style="color:#aaa; font-size:13px;">Set an ABSOLUTE PATH here (e.g. C:\Users\bruno\Desktop\PanopDatabase) to dictate where everything writes.</p>
+                <input type="text" id="rootDirInput">
+                <h3>Trusted Android Devices (ADB IPs)</h3>
+                <p style="color:#aaa; font-size:13px;">Enter ADB Wireless IP addresses. (e.g. 192.168.1.15:44502). Separated by commas.</p>
+                <textarea id="wirelessIps" rows="2"></textarea>
+                <button style="margin-top:15px;" onclick="saveNetwork()">Save Global Variables</button>
             </div>
         </div>
 
         <!-- Export -->
         <div id="export" class="panel">
-            <h1>Export Targets</h1>
-            <div class="card">
-                <h3>Absolute Environment Folders</h3>
-                <button onclick="openSysFolder('root')" class="secondary">📁 Open Master Root</button>
-                <button onclick="openSysFolder('ris')" class="secondary" style="margin-left:10px;">📋 Open Zotero Batches</button>
+            <h1>Total Database Exports</h1>
+            <div class="card" style="display:flex; flex-direction:column; gap:15px;">
+                <p style="color:#aaa;">Generate flat document versions of your entire Panop graph.</p>
+                <div><button onclick="triggerExport('json')">Download JSON Document</button> <span style="color:#666; font-size:12px; margin-left:10px;">Raw programmable dictionary mappings</span></div>
+                <div><button onclick="triggerExport('csv')">Download CSV Matrix</button> <span style="color:#666; font-size:12px; margin-left:10px;">Excel-ready tabular breakdown</span></div>
+                <div><button onclick="triggerExport('md')">Download Markdown Digest</button> <span style="color:#666; font-size:12px; margin-left:10px;">Clean formatted link graph</span></div>
+                <div><button class="secondary" onclick="triggerExport('zip')">Pack Database to ZIP</button> <span style="color:#666; font-size:12px; margin-left:10px;">Compress content without disturbing exports</span></div>
+                
+                <h3 style="margin-top:20px;">Environment Hotlinks</h3>
+                <div>
+                    <button onclick="openSysFolder('root')" class="secondary" style="margin-right:10px;">📁 Open Root Database</button>
+                    <button onclick="openSysFolder('ris')" class="secondary" style="margin-right:10px;">📋 Open Zotero Batches</button>
+                    <button onclick="openSysFolder('exports')" class="secondary">📬 Open Generated Exports</button>
+                </div>
             </div>
         </div>
     </div>
@@ -114,6 +123,7 @@
         let configData = null;
         let historyData = null;
         let selectedUrls = new Set();
+        let envData = null;
 
         function switchPanel(id) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -124,15 +134,36 @@
 
         async function init() {
             try {
+                let eRes = await fetch('http://127.0.0.1:8000/api/v1/env');
+                envData = await eRes.json();
+                document.getElementById('rootDirInput').value = envData.root_dir || 'panop_output';
+                
                 let res = await fetch('http://127.0.0.1:8000/api/v1/config');
                 configData = await res.json();
+                
                 document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
                 document.getElementById('serverBadge').style.color = "#10b981";
                 renderCategories();
-                document.getElementById('wirelessIps').value = configData.wireless_ips.join(', ');
+                document.getElementById('wirelessIps').value = (configData.wireless_ips || []).join(', ');
                 updateDashCols();
                 await loadHistory();
+                
+                // Only poll dashboard history now, never wipe the categories DOM!
+                setInterval(pollBackground, 10000);
             } catch(e) {}
+        }
+        
+        async function pollBackground() {
+            try {
+                // Check server health
+                let eRes = await fetch('http://127.0.0.1:8000/api/v1/env');
+                document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
+                document.getElementById('serverBadge').style.color = "#10b981";
+                await loadHistory();
+            } catch(e) {
+                document.getElementById('serverBadge').textContent = "OFFLINE";
+                document.getElementById('serverBadge').style.color = "#ef4444";
+            }
         }
 
         /* ---------------- CATEGORY ENGINE ---------------- */
@@ -147,14 +178,18 @@
                     <div class="cat-row">
                         <div class="cat-col"><label>ID</label><input type="text" id="cat_id_${idx}" value="${cat.id}"></div>
                         <div class="cat-col"><label>Display Name</label><input type="text" id="cat_name_${idx}" value="${cat.name}"></div>
-                        <div class="cat-col"><label>Output Directory</label><input type="text" id="cat_dest_${idx}" value="${cat.dest_folder}"></div>
+                        <div class="cat-col"><label>Output Directory (Absolute path allowed e.g. C:\\Users\\...)</label><input type="text" id="cat_dest_${idx}" value="${cat.dest_folder}"></div>
+                    </div>
+                    <div class="cat-row" style="background:#111; padding:10px; border-radius:5px;">
+                        <div class="cat-col"><label>Chrome Tab Group Name</label><input type="text" placeholder="e.g. Research (requires group match)" id="cat_grp_${idx}" value="${cat.tab_group || ''}"></div>
+                        <div class="cat-col"><label>Max Age (Days Limits)</label><input type="text" placeholder="Leave empty for infinity" id="cat_age_${idx}" value="${cat.max_age_days || ''}"></div>
                     </div>
                     <div class="cat-row">
-                        <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><textarea id="cat_dom_${idx}" rows="2">${(cat.domain_keywords || []).join(', ')}</textarea></div>
+                        <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><textarea id="cat_dom_${idx}" rows="1">${(cat.domain_keywords || []).join(', ')}</textarea></div>
                     </div>
                     <div class="cat-row">
-                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords (comma sep)</label><textarea id="cat_req_${idx}" rows="2">${(cat.body_required || []).join(', ')}</textarea></div>
-                        <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords (comma sep)</label><textarea id="cat_for_${idx}" rows="2">${(cat.body_forbidden || []).join(', ')}</textarea></div>
+                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><textarea id="cat_req_${idx}" rows="1">${(cat.body_required || []).join(', ')}</textarea></div>
+                        <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><textarea id="cat_for_${idx}" rows="1">${(cat.body_forbidden || []).join(', ')}</textarea></div>
                     </div>
                 </div>`;
             });
@@ -162,7 +197,7 @@
         }
 
         function addCategory() {
-            configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_forbidden: [] });
+            configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_forbidden: [], tab_group: "", max_age_days: "" });
             renderCategories();
         }
 
@@ -171,6 +206,8 @@
                 cat.id = document.getElementById(`cat_id_${idx}`).value;
                 cat.name = document.getElementById(`cat_name_${idx}`).value;
                 cat.dest_folder = document.getElementById(`cat_dest_${idx}`).value;
+                cat.tab_group = document.getElementById(`cat_grp_${idx}`).value;
+                cat.max_age_days = document.getElementById(`cat_age_${idx}`).value;
                 cat.domain_keywords = document.getElementById(`cat_dom_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
                 cat.body_required = document.getElementById(`cat_req_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
                 cat.body_forbidden = document.getElementById(`cat_for_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
@@ -196,6 +233,10 @@
         async function loadHistory() {
             let res = await fetch('http://127.0.0.1:8000/api/v1/history');
             historyData = await res.json();
+            
+            // Do not obliterate inner HTML to prevent losing scroll position, instead rebuild string and diff? 
+            // For simplicity, obliterate is fine for a lightweight app if user is not actively clicking.
+            // Better: only obliterate if data changed length...
             
             configData.categories.forEach(cat => {
                 let el = document.getElementById(`list_${cat.id}`);
@@ -255,21 +296,26 @@
             let tar = document.getElementById('moveSelect').value;
             for (let url of selectedUrls) {
                 let item = historyData[url];
-                await fetch('http://127.0.0.1:8000/api/v1/history/edit', { 
-                    method:'POST', 
-                    body: JSON.stringify({url: url, title: item.title, category_id: tar}), 
-                    headers:{'Content-Type':'application/json'}
-                });
+                await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({url: url, title: item.title, category_id: tar}), headers:{'Content-Type':'application/json'} });
             }
             clearSelection();
             loadHistory();
         }
 
-        /* ---------------- SYSTEMS ---------------- */
+        /* ---------------- EXPORTS & SYSTEMS ---------------- */
+        async function triggerExport(ext) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/export/${ext}`, { method: 'POST' });
+            let data = await res.json();
+            alert(`Generated Export Successfully at:\n${data.path}`);
+        }
+
         async function saveNetwork() {
+            envData.root_dir = document.getElementById('rootDirInput').value.trim() || 'panop_output';
+            await fetch('http://127.0.0.1:8000/api/v1/env', { method: 'POST', body: JSON.stringify(envData), headers:{'Content-Type':'application/json'} });
+            
             configData.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s=>s.trim()).filter(s=>s);
             await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData), headers:{'Content-Type':'application/json'} });
-            alert("Network Bound.");
+            alert("Global Environments Bound! Backend directories relocated!");
         }
 
         async function triggerSweep() {
@@ -284,11 +330,11 @@
                 let p = await res.json();
                 let tar = p.output_dir;
                 if (type === 'ris') tar += '\\ris';
+                if (type === 'exports') tar = p.export_dir;
                 ipcRenderer.send('open-local-path', tar);
             } catch(e) {}
         }
-
-        setInterval(init, 30000);
+        
         init();
     </script>
 </body>
