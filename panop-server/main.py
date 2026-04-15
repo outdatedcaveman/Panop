@@ -1,8 +1,8 @@
-import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, shutil
+import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv
 from collections import Counter
 from bs4 import BeautifulSoup
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -15,12 +15,25 @@ ENV_FILE = "panop_env.json"
 
 def get_env():
     if not os.path.exists(ENV_FILE):
-        env = {"root_dir": "panop_output", "port": 8000}
+        env = {
+            "root_dir": "panop_output",
+            "interval_hours": 6,
+            "catch_uncategorized": False,
+            "strict_domain_scan": True,
+            "port": 8000
+        }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
     try:
         with open(ENV_FILE, "r") as f: return json.load(f)
-    except: return {"root_dir": "panop_output", "port": 8000}
+    except: 
+        return {
+            "root_dir": "panop_output",
+            "interval_hours": 6,
+            "catch_uncategorized": False,
+            "strict_domain_scan": True,
+            "port": 8000
+        }
 
 def save_env(env):
     with open(ENV_FILE, "w") as f: json.dump(env, f, indent=4)
@@ -115,7 +128,7 @@ def ensure_adb():
 def fetch_page_content(url):
     metadata = {"title": "", "abstract": "", "text": ""}
     try:
-        resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             metadata["text"] = soup.get_text().lower()
@@ -130,6 +143,7 @@ def run_adb_sweep():
     try:
         adb_exe = ensure_adb()
         config = load_config()
+        env = get_env()
         init_dirs()
         for ip in config.get("wireless_ips", []):
             subprocess.run([adb_exe, "connect", ip], capture_output=True)
@@ -157,25 +171,39 @@ def run_adb_sweep():
                 body_forb = cat.get("body_forbidden", [])
                 tab_group = cat.get("tab_group", "")
                 
+                # Substring matching
                 domain_match = any(d.lower() in url_lower for d in domains if d)
                 
-                # Tab Group constraint checking (if tab carries group payload string inside its properties)
+                # Tab Group constraint checking (cheap)
                 group_match = True
                 if tab_group: group_match = tab_group.lower() in str(tab).lower()
                 
-                if (domain_match or not domains) and group_match:
-                    if (body_req or body_forb) and not metadata and not is_pdf:
-                        metadata = fetch_page_content(url)
+                if group_match:
+                    # Expensive logic evaluation pipeline
+                    bypass_body_scan = False
                     
-                    text = metadata.get("text", "")
-                    req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
-                    forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
+                    if env.get("strict_domain_scan", False):
+                        # Strict mode: Only fetch heavy body text if the URL domain string matches explicit domain list perfectly
+                        # If the category has NO domains, strict mode blocks the body scan to prevent scraping the whole internet.
+                        if domains and domain_match:
+                            bypass_body_scan = False
+                        else:
+                            bypass_body_scan = True
+                            
+                    if (domain_match or not domains):
+                        if (body_req or body_forb) and not metadata and not is_pdf and not bypass_body_scan:
+                            metadata = fetch_page_content(url)
                     
-                    if req_match and not forb_match:
-                        matched_category = cat
-                        break
+                        text = metadata.get("text", "")
+                        req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
+                        forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
+                        
+                        if req_match and not forb_match:
+                            matched_category = cat
+                            break
 
-            if not matched_category and not is_pdf:
+            # Attempt AI prediction if user enables Uncategorized capturing or AI distribution mappings
+            if not matched_category and not is_pdf and (env.get("catch_uncategorized", False)):
                 if not metadata: metadata = fetch_page_content(url)
                 text = metadata.get("text", "")
                 if text:
@@ -184,42 +212,43 @@ def run_adb_sweep():
                         matched_category = next((c for c in categories if c["id"] == ai_cat_id), None)
                         ai_discovered = True
 
-            # If STILL no match, catch it as Uncategorized instead of destroying it
-            if not matched_category:
+            # Uncategorized Catcher Switch
+            if not matched_category and env.get("catch_uncategorized", False):
                 matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
-                os.makedirs(matched_category["dest_folder"], exist_ok=True)
 
-            if not metadata and not is_pdf: metadata = fetch_page_content(url)
-            title = metadata.get("title") or tab.get("title", "Untitled")
-            safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-            if not safe_t: safe_t = str(int(datetime.now().timestamp()))
-            
-            if text := metadata.get("text"): 
-                # Don't pollute AI profiles with Uncategorized garbage
-                if matched_category["id"] != "uncategorized":
-                    update_ai_profile(matched_category["id"], text)
+            if matched_category:
+                if not metadata and not is_pdf: metadata = fetch_page_content(url)
+                title = metadata.get("title") or tab.get("title", "Untitled")
+                safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                if not safe_t: safe_t = str(int(datetime.now().timestamp()))
+                
+                if text := metadata.get("text"): 
+                    if matched_category["id"] != "uncategorized":
+                        update_ai_profile(matched_category["id"], text)
 
-            d = matched_category.get("dest_folder", matched_category["name"])
-            target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
-                f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
-                if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
-                if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
+                d = matched_category.get("dest_folder", matched_category["name"])
+                target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
+                os.makedirs(target_dir, exist_ok=True)
+                
+                with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
+                    f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
+                    if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
+                    if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
 
-            history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
-            save_history(history)
-            
-            tab_id = tab.get("id")
-            if tab_id: requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=2)
+                history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
+                save_history(history)
+                
+                tab_id = tab.get("id")
+                if tab_id: requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=2)
 
     except Exception: pass
 
 def adb_loop():
     while True:
         run_adb_sweep()
-        time.sleep(21600)
+        hours = get_env().get("interval_hours", 6)
+        if hours < 0.1: hours = 0.1
+        time.sleep(hours * 3600)
 
 @app.on_event("startup")
 def start_background_jobs():
