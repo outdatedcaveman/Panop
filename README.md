@@ -1,5 +1,5 @@
 ﻿<p align='center'>
-  <img src='assets/logo.png' width='150'>
+  <img src='assets/logo.png' width='250'>
 </p>
 
 # Panop: Automated Mobile Knowledge Management System
@@ -22,4 +22,5 @@ Panop connects to your phone using Android's native cryptographic RSA handshake.
 
 ## ðŸ›  Usage
 Launch the executable and allow it to sit in the background. It polls Android on a hardcoded 6-hour interval, ripping closed parsed tabs and securely updating your Zotero output folders.
+
 
