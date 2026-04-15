@@ -52,7 +52,7 @@
         <div class="brand">PANOP</div>
         <div class="nav-item active" onclick="switchPanel('dash')">Live Dashboard</div>
         <div class="nav-item" onclick="switchPanel('ledger')">Historical Ledger</div>
-        <div class="nav-item" onclick="switchPanel('categories')">Routing Ontology</div>
+        <div class="nav-item" onclick="switchPanel('categories')">Categories</div>
         <div class="nav-item" onclick="switchPanel('network')">System Settings</div>
         <div class="nav-item" onclick="switchPanel('export')">File Exports</div>
     </div>
@@ -117,18 +117,22 @@
                 </div>
                 
                 <h3 style="margin-top:30px;">Algorithmic Fetch Constraints</h3>
-                <div class="cat-row">
-                    <div class="cat-col">
-                        <label>Strict Domain Pre-Filter (Performance Mode)</label>
-                        <p style="color:#666; font-size:12px; margin:5px 0;">If YES, Panop will ONLY download/scan heavy body text if the domain perfectly matches the URL first. Prevents freezing when reading 2000+ tabs on Android.</p>
+                <div class="cat-row" style="align-items: stretch;">
+                    <div class="cat-col" style="display: flex; flex-direction: column;">
+                        <div style="flex: 1;">
+                            <label>Strict Domain Pre-Filter (Performance Mode)</label>
+                            <p style="color:#666; font-size:12px; margin:5px 0;">If YES, Panop will ONLY download/scan heavy body text if the domain perfectly matches the URL first. Prevents freezing when reading 2000+ tabs on Android.</p>
+                        </div>
                         <select id="envStrict">
                             <option value="true">YES - Max Performance & Stability</option>
                             <option value="false">NO - Brute Force download ALL body text</option>
                         </select>
                     </div>
-                    <div class="cat-col">
-                        <label>Catch Uncategorized Drops Validation</label>
-                        <p style="color:#666; font-size:12px; margin:5px 0;">If YES, tabs that fail to meet rules are saved as 'Uncategorized'. If NO, total failures are ignored.</p>
+                    <div class="cat-col" style="display: flex; flex-direction: column;">
+                        <div style="flex: 1;">
+                            <label>Catch Uncategorized Drops Validation</label>
+                            <p style="color:#666; font-size:12px; margin:5px 0;">If YES, tabs that fail to meet rules are saved as 'Uncategorized'. If NO, total failures are ignored.</p>
+                        </div>
                         <select id="envCatchUncat">
                             <option value="false">NO - Discard Non-Matches</option>
                             <option value="true">YES - Keep Everything Uncategorized</option>
