@@ -184,27 +184,35 @@ def run_adb_sweep():
                         matched_category = next((c for c in categories if c["id"] == ai_cat_id), None)
                         ai_discovered = True
 
-            if matched_category:
-                if not metadata and not is_pdf: metadata = fetch_page_content(url)
-                title = metadata.get("title") or tab.get("title", "Untitled")
-                safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-                if not safe_t: safe_t = str(int(datetime.now().timestamp()))
-                
-                if text := metadata.get("text"): update_ai_profile(matched_category["id"], text)
+            # If STILL no match, catch it as Uncategorized instead of destroying it
+            if not matched_category:
+                matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
+                os.makedirs(matched_category["dest_folder"], exist_ok=True)
 
-                d = matched_category.get("dest_folder", matched_category["name"])
-                target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
-                
-                with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
-                    f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
-                    if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
-                    if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
+            if not metadata and not is_pdf: metadata = fetch_page_content(url)
+            title = metadata.get("title") or tab.get("title", "Untitled")
+            safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+            if not safe_t: safe_t = str(int(datetime.now().timestamp()))
+            
+            if text := metadata.get("text"): 
+                # Don't pollute AI profiles with Uncategorized garbage
+                if matched_category["id"] != "uncategorized":
+                    update_ai_profile(matched_category["id"], text)
 
-                history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
-                save_history(history)
-                
-                tab_id = tab.get("id")
-                if tab_id: requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=2)
+            d = matched_category.get("dest_folder", matched_category["name"])
+            target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
+                f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
+                if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
+                if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
+
+            history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
+            save_history(history)
+            
+            tab_id = tab.get("id")
+            if tab_id: requests.get(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=2)
 
     except Exception: pass
 
