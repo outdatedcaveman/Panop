@@ -209,8 +209,10 @@
                 updateDashCols();
                 await loadHistory();
                 
-                setInterval(pollBackground, 10000);
-            } catch(e) {}
+            } catch(e) {
+                // Wait and natively retry since the fastApi boot structure takes a few seconds to extract via pyinstaller
+                setTimeout(init, 2000);
+            }
         }
         
         async function pollBackground() {
@@ -224,6 +226,8 @@
                 document.getElementById('serverBadge').style.color = "#ef4444";
             }
         }
+
+        setInterval(pollBackground, 10000);
 
         function renderCategories() {
             const wrap = document.getElementById('categoriesWrapper');
