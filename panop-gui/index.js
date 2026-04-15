@@ -1,5 +1,8 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('path')
+const { spawn } = require('child_process')
+
+let backendProcess = null;
 
 function createWindow () {
   const win = new BrowserWindow({
@@ -30,6 +33,22 @@ ipcMain.on('open-folder', (event, targetFolder) => {
 });
 
 app.whenReady().then(() => {
+  // Launch the backend invisibly!
+  let backendPath;
+  const isPackaged = __dirname.includes('app.asar') || __dirname.includes('resources');
+  
+  if (isPackaged) {
+      backendPath = path.join(__dirname, 'panop-server.exe');
+  } else {
+      backendPath = path.join(__dirname, '..', 'panop-server', 'dist', 'panop-server.exe');
+  }
+
+  try {
+      backendProcess = spawn(backendPath, [], { windowsHide: true });
+  } catch (err) {
+      console.log("Could not start backend automatically. Please start it manually.");
+  }
+
   createWindow()
 
   app.on('activate', () => {
@@ -38,5 +57,8 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  if (backendProcess) {
+      backendProcess.kill();
+  }
   if (process.platform !== 'darwin') app.quit()
 })

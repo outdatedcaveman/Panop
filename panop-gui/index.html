@@ -57,12 +57,13 @@
     <div id="dashboard" class="panel active">
       <h1>Backend Status <span id="serverBadge" class="status-badge">Checking...</span></h1>
       <div class="card" style="border-left: 4px solid #38bdf8;">
-        <h3>How Android Pipeline Works</h3>
-        <p>1. Desktop Chrome fetches tabs from your Mobile every strictly <strong>12 hours</strong>.<br>
-           2. Found URLs are piped safely to localhost.<br>
-           3. Panop Backend determines if URL matches "Articles" or "Books" based on your Rules.<br>
-           4. Bookmarks are updated in <code>panop_output/</code>.<br>
-           5. RIS citations are dynamically appended into batches automatically organized by ISO Week (e.g., <code>articles_week_43.ris</code>).</p>
+        <h3>How Android ADB Pipeline Works</h3>
+        <p>1. Panop silently polls your Android Chrome via local secure loopback every strictly <strong>6 hours</strong>.<br>
+           2. Live URLs are fetched safely via `localhost:9222`.<br>
+           3. Backend determines if URL matches "Articles" or "Books" based on your Rules.<br>
+           4. Bookmarks are logged, and Zotero .RIS references are magically generated.<br>
+           5. <b>Auto-Closure Rule applies</b>: Parsed tabs are permanently deleted from your phone silently via DevTools.<br>
+           <i>*Works universally over USB, or securely across recognized Wi-Fi Networks with RSA Fingerprint pairing.</i></p>
       </div>
       <div style="display: flex; gap: 10px;">
          <button onclick="checkServer()">Ping Server</button>
@@ -94,6 +95,12 @@
         <div class="tag-list" id="booksList"></div>
       </div>
       
+      <div class="card" style="border-left: 4px solid #f43f5e;">
+        <h3>Wireless ADB Networks (Optional)</h3>
+        <p style="font-size:12px; color:#94a3b8; margin-top:0;"><i>Provide the IP:Port from your phone's 'Wireless Debugging' screen (e.g. 192.168.1.15:40555). Separate multiples with commas. Android generates random ports so update it when changing networks. USB needs no configuration.</i></p>
+        <textarea id="wirelessIps" rows="3"></textarea>
+      </div>
+
       <div class="card">
         <h3>Global Filtering Toggles</h3>
         <div class="checkbox-group">
@@ -163,16 +170,22 @@
         try {
             const res = await fetch('http://127.0.0.1:8000/api/v1/config');
             if(res.ok) {
-                currentConfig = await res.json();
+                const data = await res.json();
+                currentConfig = data;
                 renderDomains('articles', currentConfig.articles_domains);
                 renderDomains('books', currentConfig.books_domains);
-                document.getElementById('trustPdfs').checked = currentConfig.rules.trust_all_pdfs;
+                
+                if (data.wireless_ips) {
+                   document.getElementById('wirelessIps').value = data.wireless_ips.join(', ');
+                }
+                document.getElementById('trustPdfs').checked = data.rules.trust_all_pdfs;
             }
         } catch(e) { console.error("Failed to load config", e); }
     }
 
     async function saveConfig() {
         currentConfig.rules.trust_all_pdfs = document.getElementById('trustPdfs').checked;
+        currentConfig.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s => s.trim()).filter(s => s);
         try {
             await fetch('http://127.0.0.1:8000/api/v1/config', {
                 method: 'POST',
