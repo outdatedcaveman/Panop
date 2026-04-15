@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!-- Outer M-Shield crest -->
+  <path d="M 40 40 V 130 A 60 60 0 0 0 160 130 V 40 L 100 85 Z" fill="#990000" />
+  <!-- Inner White Eye cutout -->
+  <circle cx="100" cy="135" r="30" fill="#FFFFFF" />
+</svg>
