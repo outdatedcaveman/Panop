@@ -43,8 +43,13 @@
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #222; }
         th { background: #1a1a1a; color: #ef4444; font-weight: 600; }
         tr:hover { background: #111; }
-        td a { color: #3b82f6; text-decoration: none; }
-        td a:hover { text-decoration: underline; }
+        
+        .table-input { background: transparent; border: 1px solid transparent; color: #ccc; padding: 4px; box-sizing: border-box; width: 100%; border-radius: 3px; font-size: 13px;}
+        .table-input:hover, .table-input:focus { background: #222; border: 1px solid #444; color: #fff; outline:none; }
+        .grid-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 0;}
+        .grid-table th { background: #1a1a1a; padding: 8px; text-align: left; font-size:11px; text-transform: uppercase; color:#ef4444; border-bottom: 2px solid #333;}
+        .grid-table td { padding: 4px 8px; border-bottom: 1px solid #222; }
+        .grid-table tr:hover { background: #151515; }
     </style>
 </head>
 <body>
@@ -77,7 +82,7 @@
             <p style="color:#aaa; font-size: 14px;">Total chronological timeline of all documents processed and accepted by Panop across all categories.</p>
             <div class="card" style="overflow-x: auto; max-height: 70vh; overflow-y: auto;">
                 <table id="ledgerTable">
-                    <thead><tr><th>Date Executed</th><th>Assigned Category</th><th>Document Title</th><th>Source URL</th></tr></thead>
+                    <thead><tr><th style="width:20px;"><input type="checkbox" onchange="selectAllHistory(this.checked)"></th><th style="width:120px;">Date</th><th style="width:150px;">Category</th><th>Document Title</th><th>Source URL</th><th style="width:50px;">Act</th></tr></thead>
                     <tbody id="ledgerBody"></tbody>
                 </table>
             </div>
@@ -254,6 +259,12 @@
                         <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><input type="text" id="cat_dom_${idx}" value="${(cat.domain_keywords || []).join(', ')}" /></div>
                     </div>
                     <div class="cat-row">
+                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Mode</label>
+                            <select id="cat_req_mode_${idx}">
+                                <option value="ALL" ${cat.body_required_mode !== 'ANY' ? 'selected' : ''}>ALL words must exist</option>
+                                <option value="ANY" ${cat.body_required_mode === 'ANY' ? 'selected' : ''}>ANY single word is enough</option>
+                            </select>
+                        </div>
                         <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><input type="text" id="cat_req_${idx}" value="${(cat.body_required || []).join(', ')}" /></div>
                         <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><input type="text" id="cat_for_${idx}" value="${(cat.body_forbidden || []).join(', ')}" /></div>
                     </div>
@@ -263,7 +274,7 @@
         }
 
         function addCategory() {
-            configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_forbidden: [], tab_group: "", max_age_days: "" });
+            configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_required_mode: "ALL", body_forbidden: [], tab_group: "", max_age_days: "" });
             renderCategories();
         }
 
@@ -275,6 +286,7 @@
                 cat.tab_group = document.getElementById(`cat_grp_${idx}`).value;
                 cat.max_age_days = document.getElementById(`cat_age_${idx}`).value;
                 cat.domain_keywords = document.getElementById(`cat_dom_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
+                cat.body_required_mode = document.getElementById(`cat_req_mode_${idx}`).value;
                 cat.body_required = document.getElementById(`cat_req_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
                 cat.body_forbidden = document.getElementById(`cat_for_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
             });
@@ -294,7 +306,18 @@
                 wrap.innerHTML += `
                 <div class="col-card" id="col_${cat.id}">
                     <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px; color:${cat.id === 'uncategorized' ? '#f59e0b' : '#fff'};">${cat.name}</h3>
-                    <div id="list_${cat.id}"></div>
+                    <table class="grid-table">
+                        <thead>
+                            <tr>
+                                <th style="width:15px;"><input type="checkbox" onchange="selectAllCat('${cat.id}', this.checked)"></th>
+                                <th style="width:80px;">Date</th>
+                                <th>Title</th>
+                                <th>URL</th>
+                                <th style="width:25px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="list_${cat.id}"></tbody>
+                    </table>
                 </div>`;
             });
         }
@@ -314,46 +337,93 @@
             const tb = document.getElementById('ledgerBody');
             tb.innerHTML = '';
 
+            let idxCount = 0;
             Object.entries(historyData).reverse().forEach(([url, item]) => {
-                // Populate Dashboard Columns
                 let catIdResolved = item.cat_id || (item.category === "Articles" ? "articles" : "books");
                 let listId = `list_${catIdResolved}`;
                 let el = document.getElementById(listId);
-                
                 let chk = selectedUrls.has(url) ? 'checked' : '';
                 
                 if (el) {
-                    let aiBadge = item.ai_learned ? `<span style="background:#a855f7; color:white; padding:2px 4px; border-radius:3px; font-size:10px; float:right;">AI Discovered</span>` : '';
-                    let c = item.ai_learned ? 'ai' : '';
                     el.innerHTML += `
-                    <div class="hist-item ${c}">
-                        <div style="display:flex; gap:10px; align-items:center; margin-bottom:5px;">
-                            <input type="checkbox" onchange="toggleSelect('${url}')" ${chk}>
-                            <div class="hist-title" title="${item.title}">${item.title}</div>
-                        </div>
-                        <div class="hist-meta">
-                            <span>${new Date(item.date).toLocaleDateString()}</span>
-                            ${aiBadge}
-                        </div>
-                    </div>`;
+                    <tr>
+                        <td><input type="checkbox" data-url="${url}" onchange="toggleSelect('${url}')" ${chk} class="cat_chk_${catIdResolved}"></td>
+                        <td><input type="text" id="dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input"></td>
+                        <td><input type="text" id="ti_${idxCount}" value="${item.title}" title="${item.title}" class="table-input"></td>
+                        <td><input type="text" id="url_${idxCount}" value="${url}" title="${url}" class="table-input"></td>
+                        <td><button style="padding:4px; font-size:10px; background:#444;" onclick="inlineSave('${url}', ${idxCount}, '${catIdResolved}')">💾</button></td>
+                    </tr>`;
                 }
 
-                // Populate Master Ledger (Chronological Table)
-                let aiTxt = item.ai_learned ? `<span style="color:#a855f7;">AI Predicted</span>` : item.category;
                 tb.innerHTML += `
                 <tr>
-                    <td><input type="checkbox" style="margin-right:8px; width:auto;" onchange="toggleSelect('${url}')" ${chk}> ${new Date(item.date).toLocaleString()}</td>
-                    <td>${aiTxt}</td>
-                    <td style="max-width:300px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${item.title}">${item.title}</td>
-                    <td style="max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><a href="${url}" target="_blank">${url}</a></td>
+                    <td>
+                        <div style="display:flex;">
+                        <input type="checkbox" style="margin-right:8px; width:auto;" data-url="${url}" onchange="toggleSelect('${url}')" ${chk} class="hist_chk_all">
+                        <input type="text" id="ldr_dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input" style="width:100px;">
+                        </div>
+                    </td>
+                    <td>
+                        <select id="ldr_cat_${idxCount}" class="table-input">
+                            ${configData.categories.map(c => `<option value="${c.id}" ${c.id===catIdResolved ? 'selected':''}>${c.name}</option>`).join('')}
+                            <option value="uncategorized" ${catIdResolved==='uncategorized'?'selected':''}>Uncategorized</option>
+                        </select>
+                    </td>
+                    <td><input type="text" id="ldr_ti_${idxCount}" value="${item.title}" class="table-input"></td>
+                    <td><input type="text" id="ldr_url_${idxCount}" value="${url}" class="table-input"></td>
+                    <td><button style="padding:6px; font-size:11px; background:#3b82f6;" onclick="inlineSaveLdr('${url}', ${idxCount})">SAVE</button></td>
                 </tr>`;
+                idxCount++;
             });
+        }
+
+        async function inlineSave(oldUrl, idx, defaultCat) {
+            let url = document.getElementById(`url_${idx}`).value;
+            let tit = document.getElementById(`ti_${idx}`).value;
+            let dat = document.getElementById(`dt_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: url, title: tit, category_id: defaultCat, date: dat}), headers:{'Content-Type':'application/json'} });
+            selectedUrls.delete(oldUrl); 
+            await loadHistory();
+        }
+        
+        async function inlineSaveLdr(oldUrl, idx) {
+            let url = document.getElementById(`ldr_url_${idx}`).value;
+            let tit = document.getElementById(`ldr_ti_${idx}`).value;
+            let dat = document.getElementById(`ldr_dt_${idx}`).value;
+            let cat = document.getElementById(`ldr_cat_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: url, title: tit, category_id: cat, date: dat}), headers:{'Content-Type':'application/json'} });
+            selectedUrls.delete(oldUrl); 
+            await loadHistory();
         }
 
         function toggleSelect(url) {
             if (selectedUrls.has(url)) selectedUrls.delete(url);
             else selectedUrls.add(url);
-            
+            updateActionBar();
+            loadHistory();
+        }
+        
+        function selectAllCat(catId, checked) {
+            document.querySelectorAll(`.cat_chk_${catId}`).forEach(cb => {
+                let rUrl = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(rUrl);
+                else selectedUrls.delete(rUrl);
+            });
+            updateActionBar();
+            loadHistory();
+        }
+
+        function selectAllHistory(checked) {
+            document.querySelectorAll(`.hist_chk_all`).forEach(cb => {
+                let rUrl = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(rUrl);
+                else selectedUrls.delete(rUrl);
+            });
+            updateActionBar();
+            loadHistory();
+        }
+
+        function updateActionBar() {
             let ab = document.getElementById('editActionBar');
             if (selectedUrls.size > 0) {
                 ab.style.display = 'flex';
@@ -361,7 +431,6 @@
             } else {
                 ab.style.display = 'none';
             }
-            loadHistory(); // refresh checkbox visuals on both elements
         }
 
         function clearSelection() {

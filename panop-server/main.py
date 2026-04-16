@@ -60,12 +60,12 @@ DEFAULT_CONFIG = {
         {
             "id": "articles", "name": "Articles", "dest_folder": "Android Articles",
             "domain_keywords": ["arxiv.org", "nature.com"], "body_required": ["abstract"],
-            "body_forbidden": [], "tab_group": "", "max_age_days": ""
+            "body_required_mode": "ALL", "body_forbidden": [], "tab_group": "", "max_age_days": ""
         },
         {
             "id": "books", "name": "Books", "dest_folder": "Android Books",
             "domain_keywords": ["goodreads.com"], "body_required": ["isbn"],
-            "body_forbidden": [], "tab_group": "", "max_age_days": ""
+            "body_required_mode": "ANY", "body_forbidden": [], "tab_group": "", "max_age_days": ""
         }
     ],
     "wireless_ips": []
@@ -139,6 +139,38 @@ def fetch_page_content(url):
     except Exception: pass
     return metadata
 
+def add_chrome_bookmark(url, title, category_name):
+    profile = os.environ.get("USERPROFILE")
+    if not profile: return
+    book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Bookmarks")
+    if not os.path.exists(book_path): return
+    try:
+        with open(book_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        other = data.get("roots", {}).get("other", {})
+        if "children" not in other:
+            other["children"] = []
+            
+        panop_folder = next((c for c in other["children"] if c.get("name") == "Panop" and c.get("type") == "folder"), None)
+        if not panop_folder:
+            stamp = str(int(time.time() * 1000000))
+            panop_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "name": "Panop", "type": "folder"}
+            other["children"].append(panop_folder)
+            
+        cat_folder = next((c for c in panop_folder["children"] if c.get("name") == category_name and c.get("type") == "folder"), None)
+        if not cat_folder:
+            stamp = str(int(time.time() * 1000000))
+            cat_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "name": category_name, "type": "folder"}
+            panop_folder["children"].append(cat_folder)
+            
+        if not any(c.get("url") == url for c in cat_folder["children"]):
+            stamp = str(int(time.time() * 1000000))
+            cat_folder["children"].append({"date_added": stamp, "name": title, "type": "url", "url": url})
+            with open(book_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+    except Exception:
+        pass
+
 def run_adb_sweep():
     try:
         adb_exe = ensure_adb()
@@ -168,6 +200,7 @@ def run_adb_sweep():
             for cat in categories:
                 domains = cat.get("domain_keywords", [])
                 body_req = cat.get("body_required", [])
+                body_req_mode = cat.get("body_required_mode", "ALL")
                 body_forb = cat.get("body_forbidden", [])
                 tab_group = cat.get("tab_group", "")
                 
@@ -195,7 +228,10 @@ def run_adb_sweep():
                             metadata = fetch_page_content(url)
                     
                         text = metadata.get("text", "")
-                        req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
+                        if body_req_mode == "ANY":
+                            req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
+                        else:
+                            req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
                         forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
                         
                         if req_match and not forb_match:
@@ -237,6 +273,7 @@ def run_adb_sweep():
 
                 history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
                 save_history(history)
+                add_chrome_bookmark(url, title, matched_category["name"])
                 
                 tab_id = tab.get("id")
                 # Removed json/close execution to preserve tabs gracefully on Android and prevent data destruction paranoia
@@ -278,18 +315,26 @@ def update_ev(data: dict):
 def get_hi(): return load_history()
 
 class EditItem(BaseModel):
+    old_url: str
     url: str
     title: str
     category_id: str
+    date: str
 
 @app.post("/api/v1/history/edit")
 def edit_hi(item: EditItem):
     h = load_history()
-    if item.url in h:
+    if item.old_url in h:
+        val = h[item.old_url]
+        val["title"] = item.title
+        val["date"] = item.date
         config = load_config()
         cat = next((c for c in config["categories"] if c["id"] == item.category_id), None)
-        h[item.url]["title"] = item.title
-        if cat: h[item.url].update({"cat_id": cat["id"], "category": cat["name"]})
+        if cat: val.update({"cat_id": cat["id"], "category": cat["name"]})
+        
+        if item.url != item.old_url:
+            del h[item.old_url]
+            h[item.url] = val
         save_history(h)
     return {"status": "ok"}
 
