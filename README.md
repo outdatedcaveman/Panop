@@ -20,7 +20,7 @@ Panop is a completely local, zero-cloud knowledge capture pipeline. It connects 
 ## Security & Privacy
 Panop connects to your phone using Android's native cryptographic RSA handshake. All metadata parsing occurs locally on your machine using `BeautifulSoup`â€”not via cloud AI endpoints. No URLs, history, or tokens are ever sent to external networks.
 
-##  Usage
+## Usage
 Launch the executable and allow it to sit in the background. It polls Android on a hardcoded 6-hour interval, ripping closed parsed tabs and securely updating your Zotero output folders.
 
 
