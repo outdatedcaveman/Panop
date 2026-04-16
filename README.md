@@ -17,7 +17,7 @@ Panop is a completely local, zero-cloud knowledge capture pipeline. It connects 
 - **Backend:** Python (FastAPI + BeautifulSoup) driving Android Debug Bridge (`adb`) protocols to query live Chrome tabs over `localhost:9222`.
 - **Application:** Electron + NodeJS wrapper providing a sleek aesthetic dashboard to customize rules, ping the server, view logs, and natively export output directories. The FastAPI engine runs entirely invisibly as a packaged subprocess.
 
-## ðŸ” Security & Privacy
+## Security & Privacy
 Panop connects to your phone using Android's native cryptographic RSA handshake. All metadata parsing occurs locally on your machine using `BeautifulSoup`â€”not via cloud AI endpoints. No URLs, history, or tokens are ever sent to external networks.
 
 ##  Usage
