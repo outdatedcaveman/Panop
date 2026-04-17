@@ -38,18 +38,29 @@
         
         #editActionBar { position: fixed; bottom: 0; left: 250px; right: 0; background: #111; border-top: 1px solid #333; padding: 15px 40px; display: none; align-items: center; gap: 15px; box-shadow: 0 -5px 15px rgba(0,0,0,0.5); z-index:100; }
         
-        /* Master Ledger Table */
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #222; }
-        th { background: #1a1a1a; color: #ef4444; font-weight: 600; }
-        tr:hover { background: #111; }
-        
-        .table-input { background: transparent; border: 1px solid transparent; color: #ccc; padding: 4px; box-sizing: border-box; width: 100%; border-radius: 3px; font-size: 13px;}
-        .table-input:hover, .table-input:focus { background: #222; border: 1px solid #444; color: #fff; outline:none; }
-        .grid-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 0;}
-        .grid-table th { background: #1a1a1a; padding: 8px; text-align: left; font-size:11px; text-transform: uppercase; color:#ef4444; border-bottom: 2px solid #333;}
-        .grid-table td { padding: 4px 8px; border-bottom: 1px solid #222; }
-        .grid-table tr:hover { background: #151515; }
+        /* ── Dashboard unified table ───────────────────────────────── */
+        .filter-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+        .filter-bar input, .filter-bar select { margin-top:0; padding:7px 10px; font-size:12px; width:auto; flex:1; min-width:120px; }
+        .filter-bar .fbar-search { flex:2; min-width:200px; }
+        .sort-th { cursor:pointer; user-select:none; white-space:nowrap; }
+        .sort-th:hover { color:#fff; }
+        .sort-th .arrow { margin-left:4px; opacity:0.4; font-size:10px; }
+        .sort-th.asc .arrow::after { content:'▲'; opacity:1; }
+        .sort-th.desc .arrow::after { content:'▼'; opacity:1; }
+        .cat-badge { display:inline-block; padding:2px 7px; border-radius:3px; font-size:11px; font-weight:600; background:#1e293b; color:#94a3b8; }
+        .cat-badge.articles { background:#172554; color:#60a5fa; }
+        .cat-badge.books { background:#14532d; color:#4ade80; }
+        .cat-badge.uncategorized { background:#431407; color:#fb923c; }
+        /* Shared editable table */
+        table { width:100%; border-collapse:collapse; font-size:13px; }
+        th, td { padding:9px 12px; text-align:left; border-bottom:1px solid #1e1e1e; vertical-align:middle; }
+        th { background:#0d0d0d; color:#ef4444; font-weight:600; position:sticky; top:0; z-index:2; }
+        tr:hover td { background:#111; }
+        .table-input { background:transparent; border:1px solid transparent; color:#ccc; padding:3px 5px; width:100%; box-sizing:border-box; border-radius:3px; font-size:12px; font-family:inherit; }
+        .table-input:hover, .table-input:focus { background:#1a1a1a; border-color:#444; color:#fff; outline:none; }
+        .url-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3b82f6; font-size:11px; }
+        .title-cell { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .results-count { font-size:12px; color:#666; margin-bottom:6px; }
     </style>
 </head>
 <body>
@@ -82,7 +93,33 @@
                 </div>
                 <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
             </div>
-            <div style="display:flex; gap:20px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; height: calc(100vh - 280px);" id="dashCols"></div>
+            <!-- Filter bar -->
+            <div class="filter-bar">
+                <input class="fbar-search" type="text" id="dashSearch" placeholder="🔍  Search title or URL..." oninput="applyFilters()">
+                <select id="dashCatFilter" onchange="applyFilters()" style="min-width:140px;">
+                    <option value="">All Categories</option>
+                </select>
+                <input type="date" id="dashDateFrom" onchange="applyFilters()" title="From date">
+                <input type="date" id="dashDateTo" onchange="applyFilters()" title="To date">
+                <button class="secondary" onclick="clearFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
+            </div>
+            <div class="results-count" id="dashCount"></div>
+            <!-- Unified table -->
+            <div style="height:calc(100vh - 320px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
+                <table id="dashTable">
+                    <thead>
+                        <tr>
+                            <th style="width:22px;"><input type="checkbox" id="dashChkAll" onchange="selectAllDash(this.checked)"></th>
+                            <th class="sort-th" onclick="sortTable('date')" data-col="date">Date<span class="arrow"></span></th>
+                            <th class="sort-th" onclick="sortTable('category')" data-col="category">Category<span class="arrow"></span></th>
+                            <th class="sort-th" onclick="sortTable('title')" data-col="title">Title<span class="arrow"></span></th>
+                            <th>URL</th>
+                            <th style="width:46px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashBody"></tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Master Ledger Window -->
@@ -221,7 +258,6 @@
                 document.getElementById('serverBadge').style.color = "#10b981";
                 renderCategories();
                 document.getElementById('wirelessIps').value = (configData.wireless_ips || []).join(', ');
-                updateDashCols();
                 await loadHistory();
                 
             } catch(e) {
@@ -334,92 +370,165 @@
             });
             await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData), headers:{'Content-Type':'application/json'} });
             alert("Pipeline Math Updated!");
-            updateDashCols();
+            rebuildCatFilter();
         }
 
-        function updateDashCols() {
-            const wrap = document.getElementById('dashCols');
-            wrap.innerHTML = '';
-            
-            // Push columns for categories mapping
-            let all = [...configData.categories, {id: 'uncategorized', name: 'Uncategorized Vault'}];
-            
-            all.forEach(cat => {
-                wrap.innerHTML += `
-                <div class="col-card" id="col_${cat.id}">
-                    <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px; color:${cat.id === 'uncategorized' ? '#f59e0b' : '#fff'};">${cat.name}</h3>
-                    <table class="grid-table">
-                        <thead>
-                            <tr>
-                                <th style="width:15px;"><input type="checkbox" onchange="selectAllCat('${cat.id}', this.checked)"></th>
-                                <th style="width:80px;">Date</th>
-                                <th>Title</th>
-                                <th>URL</th>
-                                <th style="width:25px;"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="list_${cat.id}"></tbody>
-                    </table>
-                </div>`;
+        /* ──────────────────────────────────────────────────────
+           Unified dash table + its filter / sort engine
+           ────────────────────────────────────────────────────── */
+        let dashRows = [];       // master in-memory copy of all history rows
+        let dashSortCol = 'date';
+        let dashSortDir = 'desc'; // newest first by default
+
+        function rebuildCatFilter() {
+            let sel = document.getElementById('dashCatFilter');
+            let prev = sel.value;
+            sel.innerHTML = '<option value="">All Categories</option>';
+            let cats = new Set(dashRows.map(r => r.category));
+            cats.forEach(c => { let o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+            sel.value = prev || '';
+        }
+
+        function applyFilters() {
+            let q = (document.getElementById('dashSearch').value || '').toLowerCase();
+            let cat = document.getElementById('dashCatFilter').value;
+            let from = document.getElementById('dashDateFrom').value;
+            let to = document.getElementById('dashDateTo').value;
+
+            let filtered = dashRows.filter(r => {
+                if (q && !r.title.toLowerCase().includes(q) && !r.url.toLowerCase().includes(q)) return false;
+                if (cat && r.category !== cat) return false;
+                if (from && r.date < from) return false;
+                if (to && r.date > to) return false;
+                return true;
+            });
+
+            // Sort
+            filtered.sort((a, b) => {
+                let av = a[dashSortCol] || '', bv = b[dashSortCol] || '';
+                return dashSortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+            });
+
+            renderDashRows(filtered);
+            document.getElementById('dashCount').textContent = `${filtered.length} of ${dashRows.length} entries`;
+        }
+
+        function sortTable(col) {
+            if (dashSortCol === col) dashSortDir = dashSortDir === 'asc' ? 'desc' : 'asc';
+            else { dashSortCol = col; dashSortDir = 'asc'; }
+            // Update header arrows
+            document.querySelectorAll('.sort-th').forEach(th => {
+                th.classList.remove('asc', 'desc');
+                if (th.dataset.col === col) th.classList.add(dashSortDir);
+            });
+            applyFilters();
+        }
+
+        function clearFilters() {
+            document.getElementById('dashSearch').value = '';
+            document.getElementById('dashCatFilter').value = '';
+            document.getElementById('dashDateFrom').value = '';
+            document.getElementById('dashDateTo').value = '';
+            applyFilters();
+        }
+
+        function catBadgeClass(catName) {
+            if (!catName) return 'cat-badge';
+            let k = catName.toLowerCase().replace(/\s+/g,'');
+            if (k.includes('article')) return 'cat-badge articles';
+            if (k.includes('book')) return 'cat-badge books';
+            if (k.includes('uncat')) return 'cat-badge uncategorized';
+            return 'cat-badge';
+        }
+
+        function renderDashRows(rows) {
+            const tb = document.getElementById('dashBody');
+            if (!tb) return;
+            tb.innerHTML = '';
+            rows.forEach((r, i) => {
+                let chk = selectedUrls.has(r.url) ? 'checked' : '';
+                let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let enc = encodeURIComponent(r.url);
+                tb.innerHTML += `<tr>
+                    <td><input type="checkbox" style="width:auto;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="dash_chk_all"></td>
+                    <td style="white-space:nowrap; font-size:12px; color:#666;"><input type="text" id="ddt_${i}" value="${r.date}" class="table-input" style="width:95px;"></td>
+                    <td><span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span></td>
+                    <td class="title-cell"><input type="text" id="dti_${i}" value="${safeTitle}" title="${safeTitle}" class="table-input"></td>
+                    <td class="url-cell"><a href="${safeUrl}" title="${safeUrl}" style="color:#3b82f6; text-decoration:none;" onclick="event.preventDefault(); require('electron').shell.openExternal('${safeUrl}')">${r.url}</a></td>
+                    <td style="white-space:nowrap;">
+                        <button style="padding:3px 7px; font-size:10px; background:#1e293b;" title="Save edits" onclick="inlineSaveDash(decodeURIComponent('${enc}'), ${i}, '${r.catId}')">💾</button>
+                        <button style="padding:3px 7px; font-size:10px; background:#3b1c1c;" title="Delete" onclick="deleteSingle(decodeURIComponent('${enc}'))">✕</button>
+                    </td>
+                </tr>`;
             });
         }
 
+        function selectAllDash(checked) {
+            document.querySelectorAll('.dash_chk_all').forEach(cb => {
+                let u = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(u); else selectedUrls.delete(u);
+                cb.checked = checked;
+            });
+            updateActionBar();
+        }
+
+        async function inlineSaveDash(oldUrl, idx, defaultCatId) {
+            let tit = document.getElementById(`dti_${idx}`).value;
+            let dat = document.getElementById(`ddt_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: oldUrl, title: tit, category_id: defaultCatId, date: dat}), headers:{'Content-Type':'application/json'} });
+            await loadHistory();
+        }
+
+        async function deleteSingle(url) {
+            if (!confirm('Delete this entry from the database?')) return;
+            await fetch('http://127.0.0.1:8000/api/v1/history/delete', { method:'POST', body: JSON.stringify({urls: [url]}), headers:{'Content-Type':'application/json'} });
+            await loadHistory();
+        }
+
         async function loadHistory() {
-            if (historyLoading) return;  // prevent concurrent DOM rebuild crash
+            if (historyLoading) return;
             historyLoading = true;
             try {
                 let res = await fetch('http://127.0.0.1:8000/api/v1/history');
                 historyData = await res.json();
-                
-                let all = [...(configData ? configData.categories : []), {id: 'uncategorized'}];
-                all.forEach(cat => {
-                    let el = document.getElementById(`list_${cat.id}`);
-                    if(el) el.innerHTML = '';
-                });
 
+                // Build master rows array (newest first)
+                dashRows = Object.entries(historyData).reverse().map(([url, item]) => ({
+                    url,
+                    title: item.title || 'Untitled',
+                    category: item.category || 'Uncategorized',
+                    catId: item.cat_id || 'uncategorized',
+                    date: item.date ? item.date.split('T')[0] : ''
+                }));
+
+                rebuildCatFilter();
+                applyFilters();
+
+                // Also populate ledger
                 const tb = document.getElementById('ledgerBody');
-                if (tb) tb.innerHTML = '';
-
-                let idxCount = 0;
-                Object.entries(historyData).reverse().forEach(([url, item]) => {
-                    let catIdResolved = item.cat_id || 'uncategorized';
-                    let el = document.getElementById(`list_${catIdResolved}`);
-                    let chk = selectedUrls.has(url) ? 'checked' : '';
-                    // Escape special chars to avoid breaking HTML attribute strings
-                    let safeTitle = (item.title || 'Untitled').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                    let safeUrl = url.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                    
-                    if (el) {
-                        el.innerHTML += `
-                        <tr>
-                            <td><input type="checkbox" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${encodeURIComponent(url)}'))" ${chk} class="cat_chk_${catIdResolved}"></td>
-                            <td><input type="text" id="dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input"></td>
-                            <td><input type="text" id="ti_${idxCount}" value="${safeTitle}" title="${safeTitle}" class="table-input"></td>
-                            <td><input type="text" id="url_${idxCount}" value="${safeUrl}" title="${safeUrl}" class="table-input"></td>
-                            <td><button style="padding:4px; font-size:10px; background:#444;" onclick="inlineSave(decodeURIComponent('${encodeURIComponent(url)}'), ${idxCount}, '${catIdResolved}')">💾</button></td>
+                if (tb) {
+                    tb.innerHTML = '';
+                    dashRows.forEach((r, i) => {
+                        let chk = selectedUrls.has(r.url) ? 'checked' : '';
+                        let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                        let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                        let enc = encodeURIComponent(r.url);
+                        tb.innerHTML += `<tr>
+                            <td><div style="display:flex;align-items:center;gap:4px;">
+                                <input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all">
+                                <input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:95px;">
+                            </div></td>
+                            <td><select id="ldr_cat_${i}" class="table-input">
+                                ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===r.catId?'selected':''}>${c.name}</option>`).join('')}
+                                <option value="uncategorized" ${r.catId==='uncategorized'?'selected':''}>Uncategorized</option>
+                            </select></td>
+                            <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input"></td>
+                            <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
+                            <td><button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button></td>
                         </tr>`;
-                    }
-
-                    if (tb) tb.innerHTML += `
-                    <tr>
-                        <td>
-                            <div style="display:flex; align-items:center; gap:4px;">
-                            <input type="checkbox" style="width:auto; margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${encodeURIComponent(url)}'))" ${chk} class="hist_chk_all">
-                            <input type="text" id="ldr_dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input" style="width:95px;">
-                            </div>
-                        </td>
-                        <td>
-                            <select id="ldr_cat_${idxCount}" class="table-input">
-                                ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===catIdResolved ? 'selected':''}>${c.name}</option>`).join('')}
-                                <option value="uncategorized" ${catIdResolved==='uncategorized'?'selected':''}>Uncategorized</option>
-                            </select>
-                        </td>
-                        <td><input type="text" id="ldr_ti_${idxCount}" value="${safeTitle}" class="table-input"></td>
-                        <td><input type="text" id="ldr_url_${idxCount}" value="${safeUrl}" class="table-input"></td>
-                        <td><button style="padding:6px; font-size:11px; background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${encodeURIComponent(url)}'), ${idxCount})">SAVE</button></td>
-                    </tr>`;
-                    idxCount++;
-                });
+                    });
+                }
             } finally {
                 historyLoading = false;
             }

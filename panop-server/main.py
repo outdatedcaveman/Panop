@@ -235,6 +235,7 @@ def run_adb_sweep():
             sweep_status["last_error"] = f"DevTools returned HTTP {resp.status_code}. Make sure Chrome is open and in the foreground on your phone."
             sweep_status["running"] = False
             return
+        tabs = resp.json()
         sweep_status["tabs_seen"] = len(tabs)
         history = load_history()
         categories = config.get("categories", [])
