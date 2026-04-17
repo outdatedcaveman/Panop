@@ -160,6 +160,47 @@ def fetch_page_content(url):
         pass
     return None  # None = fetch failed/timed out (distinct from empty body)
 
+def get_pdf_title(url, tab_title=""):
+    """Best-effort title resolution for PDF URLs.
+    1. Use DevTools tab title if Chrome already resolved it.
+    2. For arxiv: fetch the /abs/ page and extract the H1 title.
+    3. Fallback: clean up the filename from the URL path.
+    """
+    if tab_title and tab_title.strip().lower() not in ("", "untitled", "loading..."):
+        return tab_title.strip()
+
+    url_lower = url.lower()
+
+    # arxiv special case: swap /pdf/ → /abs/ to get real paper title
+    if "arxiv.org/pdf/" in url_lower or "arxiv.org/e-print/" in url_lower:
+        try:
+            abs_url = url.replace("/pdf/", "/abs/").replace("/e-print/", "/abs/")
+            abs_url = abs_url.split("?")[0].rstrip(".pdf")
+            resp = requests.get(abs_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                h1 = soup.find("h1", class_="title")
+                if h1:
+                    # arxiv wraps "Title:" in a span inside the h1 — strip it
+                    for span in h1.find_all("span"): span.decompose()
+                    return h1.get_text(strip=True)
+        except Exception:
+            pass
+
+    # Generic: derive a readable name from the URL path
+    try:
+        from urllib.parse import urlparse, unquote
+        path = unquote(urlparse(url).path)
+        name = path.rstrip("/").split("/")[-1]
+        name = name.rsplit(".", 1)[0]  # strip extension
+        name = name.replace("-", " ").replace("_", " ").strip()
+        if name:
+            return name
+    except Exception:
+        pass
+
+    return "Untitled PDF"
+
 def add_chrome_bookmark(url, title, category_name):
     """Saves a bookmark into the user's existing Chrome 'Outro Favoritos' (Other Bookmarks),
     placing it directly inside a folder matching the category name. Creates the folder if missing."""
@@ -332,8 +373,11 @@ def run_adb_sweep():
             if not req_match or forb_match:
                 return None
 
-            # Title: prefer page metadata, fall back to DevTools tab title
-            title = (metadata or {}).get("title") or tab.get("title", "Untitled")
+            # Title: prefer page metadata, fall back to PDF-aware resolution, then DevTools title
+            if is_pdf:
+                title = get_pdf_title(url, tab.get("title", ""))
+            else:
+                title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
             return (url, cat, title, metadata or {})
 
         # Run up to 20 tabs in parallel
