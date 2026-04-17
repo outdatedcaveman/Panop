@@ -144,18 +144,21 @@ def ensure_adb():
     return adb_exe
 
 def fetch_page_content(url):
-    metadata = {"title": "", "abstract": "", "text": ""}
+    """Returns metadata dict. On network failure returns empty dict (caller detects via missing 'text' key)."""
     try:
-        resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
+            metadata = {}
             metadata["text"] = soup.get_text().lower()
             t = soup.find("meta", {"name": "citation_title"})
             metadata["title"] = t.get("content", "") if t else (soup.title.string if soup.title else "")
             ab = soup.find("meta", {"name": "description"})
             if ab: metadata["abstract"] = ab.get("content", "")
-    except Exception: pass
-    return metadata
+            return metadata
+    except Exception:
+        pass
+    return None  # None = fetch failed/timed out (distinct from empty body)
 
 def add_chrome_bookmark(url, title, category_name):
     """Saves a bookmark into the user's existing Chrome 'Outro Favoritos' (Other Bookmarks),
@@ -287,29 +290,50 @@ def run_adb_sweep():
 
         # ── PHASE 2: Parallel page fetches for candidates ────────────────────
         def process_tab(tab, cat, needs_fetch):
+            """Worker: fetch page if needed, run body keyword check, return result or None.
+            Key rule: if fetch FAILS (timeout/network error) but the URL domain-matched,
+            we still include the tab — trust the domain. Only exclude when page loads
+            successfully and keywords are provably absent.
+            """
             url = tab.get("url", "")
             url_lower = url.lower()
             is_pdf = url_lower.endswith(".pdf")
             body_req = cat.get("body_required", [])
             body_req_mode = cat.get("body_required_mode", "ALL")
             body_forb = cat.get("body_forbidden", [])
+            domains = cat.get("domain_keywords", [])
+            domain_matched = any(d.lower() in url_lower for d in domains if d) if domains else True
 
-            metadata = {}
+            metadata = None
             if needs_fetch and not is_pdf:
-                metadata = fetch_page_content(url)
+                metadata = fetch_page_content(url)  # returns None on failure
 
-            text = metadata.get("text", "")
-            if body_req_mode == "ANY":
-                req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
+            fetch_failed = metadata is None
+            text = (metadata or {}).get("text", "")
+
+            if fetch_failed:
+                # Fetch timed out / network error.
+                # If domain clearly matched → trust it and include.
+                # If no domain list (open category) → skip (too risky without body check).
+                if domain_matched and domains:
+                    req_match = True
+                    forb_match = False
+                else:
+                    return None
             else:
-                req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
-            forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
+                # Page loaded — apply body keyword rules strictly
+                if body_req_mode == "ANY":
+                    req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
+                else:
+                    req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
+                forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
 
             if not req_match or forb_match:
-                return None  # body check failed
+                return None
 
-            title = metadata.get("title") or tab.get("title", "Untitled")
-            return (url, cat, title, metadata)
+            # Title: prefer page metadata, fall back to DevTools tab title
+            title = (metadata or {}).get("title") or tab.get("title", "Untitled")
+            return (url, cat, title, metadata or {})
 
         # Run up to 20 tabs in parallel
         WORKERS = 20
