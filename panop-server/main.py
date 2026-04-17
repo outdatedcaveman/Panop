@@ -507,6 +507,57 @@ def f_now(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_adb_sweep)
     return {"status": "fetching"}
 
+enrich_status = {"running": False, "total": 0, "done": 0, "updated": 0, "last_run": None}
+
+def run_enrich():
+    """Background pass: re-fetches metadata for history entries with missing/bad titles."""
+    global enrich_status
+    enrich_status.update({"running": True, "done": 0, "updated": 0, "last_run": datetime.now().isoformat()})
+    try:
+        h = load_history()
+        BAD = {"", "untitled", "untitled pdf", "loading..."}
+        candidates = [(url, item) for url, item in h.items()
+                      if (item.get("title") or "").strip().lower() in BAD]
+        enrich_status["total"] = len(candidates)
+        def enrich_one(args):
+            url, item = args
+            is_pdf = url.lower().endswith(".pdf")
+            try:
+                if is_pdf:
+                    title = get_pdf_title(url, "")
+                else:
+                    meta = fetch_page_content(url)
+                    title = (meta or {}).get("title", "").strip() if meta else ""
+                if title and title.strip().lower() not in BAD:
+                    return (url, title)
+            except Exception:
+                pass
+            return None
+        with ThreadPoolExecutor(max_workers=15) as pool:
+            futures = {pool.submit(enrich_one, (url, item)): url for url, item in candidates}
+            for future in as_completed(futures):
+                enrich_status["done"] += 1
+                result = future.result()
+                if result:
+                    url, title = result
+                    h2 = load_history()
+                    if url in h2:
+                        h2[url]["title"] = title
+                        save_history(h2)
+                        enrich_status["updated"] += 1
+    finally:
+        enrich_status["running"] = False
+
+@app.post("/api/v1/history/enrich")
+def enrich_hi(background_tasks: BackgroundTasks):
+    if enrich_status["running"]:
+        return {"status": "already_running"}
+    background_tasks.add_task(run_enrich)
+    return {"status": "started"}
+
+@app.get("/api/v1/history/enrich/status")
+def enrich_hi_status(): return enrich_status
+
 @app.get("/api/v1/system_paths")
 def get_pa(): return {"output_dir": os.path.abspath(OUTPUT_DIR()), "export_dir": os.path.abspath(EXPORT_DIR())}
 

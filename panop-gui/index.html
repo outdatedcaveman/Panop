@@ -91,7 +91,10 @@
                     </div>
                     <div id="sweepError" style="display:none; margin-top:8px; padding:8px 12px; background:#1a0505; border:1px solid #5a1a1a; border-radius:4px; color:#ef4444; font-size:12px;"></div>
                 </div>
-                <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
+                <div style="display:flex; gap:8px; align-items:center; flex-shrink:0;">
+                    <button onclick="triggerEnrich()" id="enrichBtn" class="secondary" style="white-space:nowrap;">✦ Enrich Titles</button>
+                    <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
+                </div>
             </div>
             <!-- Filter bar -->
             <div class="filter-bar">
@@ -271,18 +274,37 @@
                 await fetch('http://127.0.0.1:8000/api/v1/env');
                 document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
                 document.getElementById('serverBadge').style.color = "#10b981";
-                // Fetch sweep status
                 let sr = await fetch('http://127.0.0.1:8000/api/v1/status');
                 let st = await sr.json();
                 updateSweepStatus(st);
-                // Only refresh history if not already loading and no sweep running
-                if (!historyLoading && !st.running && document.getElementById('sweepBtn').innerText === 'FETCH NOW FROM ANDROID') {
+                // Poll enrich status too
+                let er = await fetch('http://127.0.0.1:8000/api/v1/history/enrich/status');
+                let et = await er.json();
+                let eb = document.getElementById('enrichBtn');
+                if (et.running) {
+                    eb.textContent = `✦ Enriching ${et.done}/${et.total}...`;
+                    eb.disabled = true;
+                } else if (et.last_run && et.updated > 0) {
+                    eb.textContent = `✦ Enrich Titles (last: +${et.updated})`;
+                    eb.disabled = false;
+                } else {
+                    eb.textContent = '✦ Enrich Titles';
+                    eb.disabled = false;
+                }
+                if (!historyLoading && !st.running && !et.running && document.getElementById('sweepBtn').innerText.startsWith('FETCH')) {
                     await loadHistory();
                 }
             } catch(e) {
                 document.getElementById('serverBadge').textContent = "OFFLINE";
                 document.getElementById('serverBadge').style.color = "#ef4444";
             }
+        }
+
+        async function triggerEnrich() {
+            let btn = document.getElementById('enrichBtn');
+            btn.textContent = '✦ Starting...';
+            btn.disabled = true;
+            await fetch('http://127.0.0.1:8000/api/v1/history/enrich', {method:'POST'});
         }
 
         function updateSweepStatus(st) {
