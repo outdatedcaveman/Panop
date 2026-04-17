@@ -1,4 +1,5 @@
 import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from bs4 import BeautifulSoup
 import requests
@@ -100,7 +101,12 @@ def load_config():
     return load_json(CONFIG_FILE(), DEFAULT_CONFIG)
 
 def load_history(): return load_json(HISTORY_FILE(), {})
-def save_history(h): save_json(HISTORY_FILE(), h)
+
+history_lock = threading.Lock()
+
+def save_history(h):
+    with history_lock:
+        save_json(HISTORY_FILE(), h)
 def load_profiles(): return load_json(LEARNING_FILE(), {})
 def save_profiles(p): save_json(LEARNING_FILE(), p)
 
@@ -140,7 +146,7 @@ def ensure_adb():
 def fetch_page_content(url):
     metadata = {"title": "", "abstract": "", "text": ""}
     try:
-        resp = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             metadata["text"] = soup.get_text().lower()
@@ -226,102 +232,126 @@ def run_adb_sweep():
             sweep_status["last_error"] = f"DevTools returned HTTP {resp.status_code}. Make sure Chrome is open and in the foreground on your phone."
             sweep_status["running"] = False
             return
-        tabs = resp.json()
         sweep_status["tabs_seen"] = len(tabs)
         history = load_history()
         categories = config.get("categories", [])
-        
-        for tab in tabs:
-            try:
-                url = tab.get("url", "")
-                if url.startswith("chrome://") or not url or url in history: continue
-                sweep_status["tabs_new"] += 1
-                
-                url_lower = url.lower()
-                is_pdf = url_lower.endswith(".pdf")
-                matched_category = None
-                ai_discovered = False
-                metadata = {}  # reset per-tab — never reuse across categories
+        strict = env.get("strict_domain_scan", True)
+        catch_uncat = env.get("catch_uncategorized", False)
 
-                for cat in categories:
-                    domains = cat.get("domain_keywords", [])
-                    body_req = cat.get("body_required", [])
-                    body_req_mode = cat.get("body_required_mode", "ALL")
-                    body_forb = cat.get("body_forbidden", [])
-                    tab_group = cat.get("tab_group", "")
-                    
-                    # Substring matching against URL
-                    domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
-                    
-                    # Tab Group constraint (cheap check)
-                    group_match = True
-                    if tab_group: group_match = tab_group.lower() in str(tab).lower()
-                    
-                    if not group_match:
+        # ── PHASE 1: Pure string matching (no network, instant) ──────────────
+        # Build list of (tab, cat, needs_body_fetch) for candidates only
+        candidates = []  # (tab, matched_cat_no_body_check, needs_fetch)
+        for tab in tabs:
+            url = tab.get("url", "")
+            if not url or url.startswith("chrome://") or url in history:
+                continue
+            sweep_status["tabs_new"] += 1
+            url_lower = url.lower()
+            is_pdf = url_lower.endswith(".pdf")
+
+            domain_matched_cat = None
+            needs_fetch = False
+
+            for cat in categories:
+                domains = cat.get("domain_keywords", [])
+                body_req = cat.get("body_required", [])
+                body_forb = cat.get("body_forbidden", [])
+                tab_group = cat.get("tab_group", "")
+
+                if tab_group and tab_group.lower() not in str(tab).lower():
+                    continue
+
+                domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+
+                if not domain_match and strict and domains:
+                    continue  # strict mode: skip if no domain match
+
+                if domain_match or not domains:
+                    # If no body keywords needed, match immediately
+                    if not body_req and not body_forb and not is_pdf:
+                        domain_matched_cat = cat
+                        needs_fetch = False  # still fetch for title/abstract
+                        break
+                    elif not is_pdf:
+                        domain_matched_cat = cat
+                        needs_fetch = True
+                        break
+
+            if domain_matched_cat:
+                candidates.append((tab, domain_matched_cat, needs_fetch))
+            elif catch_uncat and not any(url.startswith("chrome://") for _ in [1]):
+                candidates.append((tab, {"name": "Uncategorized", "id": "uncategorized",
+                                         "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}, True))
+
+        sweep_status["tabs_seen"] = len(tabs)
+
+        # ── PHASE 2: Parallel page fetches for candidates ────────────────────
+        def process_tab(tab, cat, needs_fetch):
+            url = tab.get("url", "")
+            url_lower = url.lower()
+            is_pdf = url_lower.endswith(".pdf")
+            body_req = cat.get("body_required", [])
+            body_req_mode = cat.get("body_required_mode", "ALL")
+            body_forb = cat.get("body_forbidden", [])
+
+            metadata = {}
+            if needs_fetch and not is_pdf:
+                metadata = fetch_page_content(url)
+
+            text = metadata.get("text", "")
+            if body_req_mode == "ANY":
+                req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
+            else:
+                req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
+            forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
+
+            if not req_match or forb_match:
+                return None  # body check failed
+
+            title = metadata.get("title") or tab.get("title", "Untitled")
+            return (url, cat, title, metadata)
+
+        # Run up to 20 tabs in parallel
+        WORKERS = 20
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
+                       for tab, cat, needs_fetch in candidates}
+
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result is None:
+                        continue
+                    url, matched_category, title, metadata = result
+
+                    # Skip if another parallel worker already saved this url
+                    history = load_history()
+                    if url in history:
                         continue
 
-                    # Performance mode: skip body fetch if domain doesn't match AND domains are defined
-                    bypass_body_scan = False
-                    if env.get("strict_domain_scan", True):
-                        if domains and not domain_match:
-                            bypass_body_scan = True
-
-                    if domain_match or not domains:
-                        cat_metadata = {}
-                        if (body_req or body_forb) and not is_pdf and not bypass_body_scan:
-                            cat_metadata = fetch_page_content(url)
-                        
-                        text = cat_metadata.get("text", "")
-                        if body_req_mode == "ANY":
-                            req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
-                        else:
-                            req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
-                        forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
-                        
-                        if req_match and not forb_match:
-                            matched_category = cat
-                            metadata = cat_metadata  # keep the metadata we fetched for this match
-                            break
-
-                # AI prediction fallback
-                if not matched_category and not is_pdf and env.get("catch_uncategorized", False):
-                    if not metadata: metadata = fetch_page_content(url)
-                    text = metadata.get("text", "")
-                    if text:
-                        ai_cat_id = get_ai_prediction(text)
-                        if ai_cat_id:
-                            matched_category = next((c for c in categories if c["id"] == ai_cat_id), None)
-                            ai_discovered = True
-
-                # Uncategorized catch-all
-                if not matched_category and env.get("catch_uncategorized", False):
-                    matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
-
-                if matched_category:
-                    if not metadata and not is_pdf: metadata = fetch_page_content(url)
-                    title = metadata.get("title") or tab.get("title", "Untitled")
-                    safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                    safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
                     if not safe_t: safe_t = str(int(datetime.now().timestamp()))
-                    
+
                     if metadata.get("text") and matched_category["id"] != "uncategorized":
                         update_ai_profile(matched_category["id"], metadata["text"])
 
                     d = matched_category.get("dest_folder", matched_category["name"])
                     target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
                     os.makedirs(target_dir, exist_ok=True)
-                    
+
                     with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
                         f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
-                        if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
                         if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
 
-                    history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
+                    history[url] = {"title": title, "category": matched_category["name"],
+                                    "cat_id": matched_category["id"],
+                                    "date": datetime.now().isoformat(), "ai_learned": False}
                     save_history(history)
                     add_chrome_bookmark(url, title, matched_category["name"])
                     sweep_status["tabs_matched"] += 1
 
-            except Exception as ex:
-                continue  # skip broken tab, continue sweep
+                except Exception:
+                    continue
 
     except Exception as e:
         sweep_status["last_error"] = str(e)
