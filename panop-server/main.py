@@ -144,12 +144,15 @@ def ensure_adb():
     return adb_exe
 
 def fetch_page_content(url):
-    """Returns metadata dict. On network failure returns empty dict (caller detects via missing 'text' key)."""
+    """Returns metadata dict. On network failure returns None.
+    Always follows redirects; metadata includes 'canonical_url' (final address after redirects).
+    """
     try:
         resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             metadata = {}
+            metadata["canonical_url"] = resp.url  # final URL after all redirects
             metadata["text"] = soup.get_text().lower()
             t = soup.find("meta", {"name": "citation_title"})
             metadata["title"] = t.get("content", "") if t else (soup.title.string if soup.title else "")
@@ -158,7 +161,7 @@ def fetch_page_content(url):
             return metadata
     except Exception:
         pass
-    return None  # None = fetch failed/timed out (distinct from empty body)
+    return None
 
 def get_pdf_title(url, tab_title=""):
     """Best-effort title resolution for PDF URLs.
@@ -525,26 +528,44 @@ def run_enrich():
             try:
                 if is_pdf:
                     title = get_pdf_title(url, "")
+                    canonical = url  # PDFs: don't try to canonicalize
                 else:
                     meta = fetch_page_content(url)
                     title = (meta or {}).get("title", "").strip() if meta else ""
-                if title and title.strip().lower() not in BAD:
-                    return (url, title)
+                    canonical = (meta or {}).get("canonical_url", url) if meta else url
+                    # Only accept canonical if same domain (avoid auth redirect traps)
+                    from urllib.parse import urlparse
+                    if urlparse(canonical).netloc != urlparse(url).netloc:
+                        canonical = url
+                title_ok = title and title.strip().lower() not in BAD
+                return (url, title if title_ok else None, canonical)
             except Exception:
                 pass
-            return None
+            return (url, None, url)
         with ThreadPoolExecutor(max_workers=15) as pool:
             futures = {pool.submit(enrich_one, (url, item)): url for url, item in candidates}
             for future in as_completed(futures):
                 enrich_status["done"] += 1
                 result = future.result()
-                if result:
-                    url, title = result
-                    h2 = load_history()
-                    if url in h2:
-                        h2[url]["title"] = title
-                        save_history(h2)
-                        enrich_status["updated"] += 1
+                if not result: continue
+                orig_url, title, canonical = result
+                if not title and canonical == orig_url: continue
+                h2 = load_history()
+                if orig_url not in h2: continue
+                entry = h2[orig_url]
+                changed = False
+                if title:
+                    entry["title"] = title
+                    changed = True
+                # Update URL key if canonicalized and not already present
+                if canonical != orig_url and canonical not in h2:
+                    entry["original_url"] = orig_url  # keep a breadcrumb
+                    del h2[orig_url]
+                    h2[canonical] = entry
+                    changed = True
+                if changed:
+                    save_history(h2)
+                    enrich_status["updated"] += 1
     finally:
         enrich_status["running"] = False
 
@@ -557,6 +578,21 @@ def enrich_hi(background_tasks: BackgroundTasks):
 
 @app.get("/api/v1/history/enrich/status")
 def enrich_hi_status(): return enrich_status
+
+@app.get("/api/v1/history/duplicates")
+def get_dupes():
+    """Returns groups of history entries that share the same normalized title.
+    Useful for spotting DOI vs. direct URL duplicates.
+    """
+    import re
+    h = load_history()
+    norm = {}
+    for url, item in h.items():
+        key = re.sub(r'\s+', ' ', (item.get('title') or '').lower().strip())
+        if not key or key in {'untitled', 'untitled pdf'}: continue
+        norm.setdefault(key, []).append({'url': url, 'title': item.get('title'), 'category': item.get('category'), 'date': item.get('date')})
+    dupes = {k: v for k, v in norm.items() if len(v) > 1}
+    return {'total_groups': len(dupes), 'groups': dupes}
 
 @app.get("/api/v1/system_paths")
 def get_pa(): return {"output_dir": os.path.abspath(OUTPUT_DIR()), "export_dir": os.path.abspath(EXPORT_DIR())}

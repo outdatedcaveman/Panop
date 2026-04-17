@@ -88,6 +88,7 @@
                         <span>Tabs seen: <span id="stSeen" style="color:#aaa;">—</span></span>
                         <span>New (not in history): <span id="stNew" style="color:#aaa;">—</span></span>
                         <span>Matched: <span id="stMatched" style="color:#10b981; font-weight:bold;">—</span></span>
+                        <span id="dupesWrap" style="display:none;">⚠ Duplicates: <span id="stDupes" style="color:#f59e0b; font-weight:bold; cursor:pointer;" onclick="switchPanel('ledger')" title="Switch to Ledger to review">—</span></span>
                     </div>
                     <div id="sweepError" style="display:none; margin-top:8px; padding:8px 12px; background:#1a0505; border:1px solid #5a1a1a; border-radius:4px; color:#ef4444; font-size:12px;"></div>
                 </div>
@@ -291,6 +292,18 @@
                     eb.textContent = '✦ Enrich Titles';
                     eb.disabled = false;
                 }
+                // Poll duplicate count (cheap call, no parallel fetch needed)
+                try {
+                    let dr = await fetch('http://127.0.0.1:8000/api/v1/history/duplicates');
+                    let dt = await dr.json();
+                    let dw = document.getElementById('dupesWrap');
+                    if (dt.total_groups > 0) {
+                        dw.style.display = 'inline';
+                        document.getElementById('stDupes').textContent = `${dt.total_groups} title group(s) — check Ledger`;
+                    } else {
+                        dw.style.display = 'none';
+                    }
+                } catch(e) {}
                 if (!historyLoading && !st.running && !et.running && document.getElementById('sweepBtn').innerText.startsWith('FETCH')) {
                     await loadHistory();
                 }
