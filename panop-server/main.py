@@ -345,6 +345,11 @@ def get_co(): return load_config()
 
 @app.post("/api/v1/config")
 def update_co(req_data: dict):
+    # Merge: never let a save wipe out wireless_ips unless the user explicitly cleared them
+    existing = load_config()
+    # If incoming request has empty wireless_ips but stored copy has entries, preserve stored ones
+    if not req_data.get("wireless_ips") and existing.get("wireless_ips"):
+        req_data["wireless_ips"] = existing["wireless_ips"]
     save_json(CONFIG_FILE(), req_data)
     init_dirs()
     return {"status": "updated"}
