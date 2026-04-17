@@ -188,46 +188,45 @@ def run_adb_sweep():
         categories = config.get("categories", [])
         
         for tab in tabs:
-            url = tab.get("url", "")
-            if url.startswith("chrome://") or not url or url in history: continue
-            
-            url_lower = url.lower()
-            is_pdf = url_lower.endswith(".pdf")
-            matched_category = None
-            ai_discovered = False
-            metadata = {}
+            try:
+                url = tab.get("url", "")
+                if url.startswith("chrome://") or not url or url in history: continue
+                
+                url_lower = url.lower()
+                is_pdf = url_lower.endswith(".pdf")
+                matched_category = None
+                ai_discovered = False
+                metadata = {}  # reset per-tab — never reuse across categories
 
-            for cat in categories:
-                domains = cat.get("domain_keywords", [])
-                body_req = cat.get("body_required", [])
-                body_req_mode = cat.get("body_required_mode", "ALL")
-                body_forb = cat.get("body_forbidden", [])
-                tab_group = cat.get("tab_group", "")
-                
-                # Substring matching
-                domain_match = any(d.lower() in url_lower for d in domains if d)
-                
-                # Tab Group constraint checking (cheap)
-                group_match = True
-                if tab_group: group_match = tab_group.lower() in str(tab).lower()
-                
-                if group_match:
-                    # Expensive logic evaluation pipeline
+                for cat in categories:
+                    domains = cat.get("domain_keywords", [])
+                    body_req = cat.get("body_required", [])
+                    body_req_mode = cat.get("body_required_mode", "ALL")
+                    body_forb = cat.get("body_forbidden", [])
+                    tab_group = cat.get("tab_group", "")
+                    
+                    # Substring matching against URL
+                    domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+                    
+                    # Tab Group constraint (cheap check)
+                    group_match = True
+                    if tab_group: group_match = tab_group.lower() in str(tab).lower()
+                    
+                    if not group_match:
+                        continue
+
+                    # Performance mode: skip body fetch if domain doesn't match AND domains are defined
                     bypass_body_scan = False
-                    
-                    if env.get("strict_domain_scan", False):
-                        # Strict mode: Only fetch heavy body text if the URL domain string matches explicit domain list perfectly
-                        # If the category has NO domains, strict mode blocks the body scan to prevent scraping the whole internet.
-                        if domains and domain_match:
-                            bypass_body_scan = False
-                        else:
+                    if env.get("strict_domain_scan", True):
+                        if domains and not domain_match:
                             bypass_body_scan = True
-                            
-                    if (domain_match or not domains):
-                        if (body_req or body_forb) and not metadata and not is_pdf and not bypass_body_scan:
-                            metadata = fetch_page_content(url)
-                    
-                        text = metadata.get("text", "")
+
+                    if domain_match or not domains:
+                        cat_metadata = {}
+                        if (body_req or body_forb) and not is_pdf and not bypass_body_scan:
+                            cat_metadata = fetch_page_content(url)
+                        
+                        text = cat_metadata.get("text", "")
                         if body_req_mode == "ANY":
                             req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
                         else:
@@ -236,47 +235,47 @@ def run_adb_sweep():
                         
                         if req_match and not forb_match:
                             matched_category = cat
+                            metadata = cat_metadata  # keep the metadata we fetched for this match
                             break
 
-            # Attempt AI prediction if user enables Uncategorized capturing or AI distribution mappings
-            if not matched_category and not is_pdf and (env.get("catch_uncategorized", False)):
-                if not metadata: metadata = fetch_page_content(url)
-                text = metadata.get("text", "")
-                if text:
-                    ai_cat_id = get_ai_prediction(text)
-                    if ai_cat_id:
-                        matched_category = next((c for c in categories if c["id"] == ai_cat_id), None)
-                        ai_discovered = True
+                # AI prediction fallback
+                if not matched_category and not is_pdf and env.get("catch_uncategorized", False):
+                    if not metadata: metadata = fetch_page_content(url)
+                    text = metadata.get("text", "")
+                    if text:
+                        ai_cat_id = get_ai_prediction(text)
+                        if ai_cat_id:
+                            matched_category = next((c for c in categories if c["id"] == ai_cat_id), None)
+                            ai_discovered = True
 
-            # Uncategorized Catcher Switch
-            if not matched_category and env.get("catch_uncategorized", False):
-                matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
+                # Uncategorized catch-all
+                if not matched_category and env.get("catch_uncategorized", False):
+                    matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
 
-            if matched_category:
-                if not metadata and not is_pdf: metadata = fetch_page_content(url)
-                title = metadata.get("title") or tab.get("title", "Untitled")
-                safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-                if not safe_t: safe_t = str(int(datetime.now().timestamp()))
-                
-                if text := metadata.get("text"): 
-                    if matched_category["id"] != "uncategorized":
-                        update_ai_profile(matched_category["id"], text)
+                if matched_category:
+                    if not metadata and not is_pdf: metadata = fetch_page_content(url)
+                    title = metadata.get("title") or tab.get("title", "Untitled")
+                    safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                    if not safe_t: safe_t = str(int(datetime.now().timestamp()))
+                    
+                    if metadata.get("text") and matched_category["id"] != "uncategorized":
+                        update_ai_profile(matched_category["id"], metadata["text"])
 
-                d = matched_category.get("dest_folder", matched_category["name"])
-                target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
-                os.makedirs(target_dir, exist_ok=True)
-                
-                with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
-                    f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
-                    if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
-                    if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
+                    d = matched_category.get("dest_folder", matched_category["name"])
+                    target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
+                    os.makedirs(target_dir, exist_ok=True)
+                    
+                    with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
+                        f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
+                        if ai_discovered: f.write("**Note:** Discovered by AI Content Recommender\n")
+                        if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
 
-                history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
-                save_history(history)
-                add_chrome_bookmark(url, title, matched_category["name"])
-                
-                tab_id = tab.get("id")
-                # Removed json/close execution to preserve tabs gracefully on Android and prevent data destruction paranoia
+                    history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
+                    save_history(history)
+                    add_chrome_bookmark(url, title, matched_category["name"])
+
+            except Exception:
+                continue  # skip broken tab, continue sweep
 
     except Exception as e:
         pass

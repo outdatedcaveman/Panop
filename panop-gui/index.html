@@ -187,6 +187,7 @@
         let historyData = null;
         let selectedUrls = new Set();
         let envData = null;
+        let historyLoading = false;  // crash guard: prevent concurrent DOM rebuilds
 
         function switchPanel(id) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -222,10 +223,13 @@
         
         async function pollBackground() {
             try {
-                let eRes = await fetch('http://127.0.0.1:8000/api/v1/env');
+                await fetch('http://127.0.0.1:8000/api/v1/env');
                 document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
                 document.getElementById('serverBadge').style.color = "#10b981";
-                await loadHistory();
+                // Only refresh history if not already loading and sweep button is idle
+                if (!historyLoading && document.getElementById('sweepBtn').innerText === 'FETCH NOW FROM ANDROID') {
+                    await loadHistory();
+                }
             } catch(e) {
                 document.getElementById('serverBadge').textContent = "OFFLINE";
                 document.getElementById('serverBadge').style.color = "#ef4444";
@@ -323,58 +327,64 @@
         }
 
         async function loadHistory() {
-            let res = await fetch('http://127.0.0.1:8000/api/v1/history');
-            historyData = await res.json();
-            
-            // Obliterate columns content
-            let all = [...configData.categories, {id: 'uncategorized'}];
-            all.forEach(cat => {
-                let el = document.getElementById(`list_${cat.id}`);
-                if(el) el.innerHTML = '';
-            });
-
-            // Obliterate ledger content
-            const tb = document.getElementById('ledgerBody');
-            tb.innerHTML = '';
-
-            let idxCount = 0;
-            Object.entries(historyData).reverse().forEach(([url, item]) => {
-                let catIdResolved = item.cat_id || (item.category === "Articles" ? "articles" : "books");
-                let listId = `list_${catIdResolved}`;
-                let el = document.getElementById(listId);
-                let chk = selectedUrls.has(url) ? 'checked' : '';
+            if (historyLoading) return;  // prevent concurrent DOM rebuild crash
+            historyLoading = true;
+            try {
+                let res = await fetch('http://127.0.0.1:8000/api/v1/history');
+                historyData = await res.json();
                 
-                if (el) {
-                    el.innerHTML += `
-                    <tr>
-                        <td><input type="checkbox" data-url="${url}" onchange="toggleSelect('${url}')" ${chk} class="cat_chk_${catIdResolved}"></td>
-                        <td><input type="text" id="dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input"></td>
-                        <td><input type="text" id="ti_${idxCount}" value="${item.title}" title="${item.title}" class="table-input"></td>
-                        <td><input type="text" id="url_${idxCount}" value="${url}" title="${url}" class="table-input"></td>
-                        <td><button style="padding:4px; font-size:10px; background:#444;" onclick="inlineSave('${url}', ${idxCount}, '${catIdResolved}')">💾</button></td>
-                    </tr>`;
-                }
+                let all = [...(configData ? configData.categories : []), {id: 'uncategorized'}];
+                all.forEach(cat => {
+                    let el = document.getElementById(`list_${cat.id}`);
+                    if(el) el.innerHTML = '';
+                });
 
-                tb.innerHTML += `
-                <tr>
-                    <td>
-                        <div style="display:flex;">
-                        <input type="checkbox" style="margin-right:8px; width:auto;" data-url="${url}" onchange="toggleSelect('${url}')" ${chk} class="hist_chk_all">
-                        <input type="text" id="ldr_dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input" style="width:100px;">
-                        </div>
-                    </td>
-                    <td>
-                        <select id="ldr_cat_${idxCount}" class="table-input">
-                            ${configData.categories.map(c => `<option value="${c.id}" ${c.id===catIdResolved ? 'selected':''}>${c.name}</option>`).join('')}
-                            <option value="uncategorized" ${catIdResolved==='uncategorized'?'selected':''}>Uncategorized</option>
-                        </select>
-                    </td>
-                    <td><input type="text" id="ldr_ti_${idxCount}" value="${item.title}" class="table-input"></td>
-                    <td><input type="text" id="ldr_url_${idxCount}" value="${url}" class="table-input"></td>
-                    <td><button style="padding:6px; font-size:11px; background:#3b82f6;" onclick="inlineSaveLdr('${url}', ${idxCount})">SAVE</button></td>
-                </tr>`;
-                idxCount++;
-            });
+                const tb = document.getElementById('ledgerBody');
+                if (tb) tb.innerHTML = '';
+
+                let idxCount = 0;
+                Object.entries(historyData).reverse().forEach(([url, item]) => {
+                    let catIdResolved = item.cat_id || 'uncategorized';
+                    let el = document.getElementById(`list_${catIdResolved}`);
+                    let chk = selectedUrls.has(url) ? 'checked' : '';
+                    // Escape special chars to avoid breaking HTML attribute strings
+                    let safeTitle = (item.title || 'Untitled').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                    let safeUrl = url.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                    
+                    if (el) {
+                        el.innerHTML += `
+                        <tr>
+                            <td><input type="checkbox" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${encodeURIComponent(url)}'))" ${chk} class="cat_chk_${catIdResolved}"></td>
+                            <td><input type="text" id="dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input"></td>
+                            <td><input type="text" id="ti_${idxCount}" value="${safeTitle}" title="${safeTitle}" class="table-input"></td>
+                            <td><input type="text" id="url_${idxCount}" value="${safeUrl}" title="${safeUrl}" class="table-input"></td>
+                            <td><button style="padding:4px; font-size:10px; background:#444;" onclick="inlineSave(decodeURIComponent('${encodeURIComponent(url)}'), ${idxCount}, '${catIdResolved}')">💾</button></td>
+                        </tr>`;
+                    }
+
+                    if (tb) tb.innerHTML += `
+                    <tr>
+                        <td>
+                            <div style="display:flex; align-items:center; gap:4px;">
+                            <input type="checkbox" style="width:auto; margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${encodeURIComponent(url)}'))" ${chk} class="hist_chk_all">
+                            <input type="text" id="ldr_dt_${idxCount}" value="${new Date(item.date).toISOString().split('T')[0]}" class="table-input" style="width:95px;">
+                            </div>
+                        </td>
+                        <td>
+                            <select id="ldr_cat_${idxCount}" class="table-input">
+                                ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===catIdResolved ? 'selected':''}>${c.name}</option>`).join('')}
+                                <option value="uncategorized" ${catIdResolved==='uncategorized'?'selected':''}>Uncategorized</option>
+                            </select>
+                        </td>
+                        <td><input type="text" id="ldr_ti_${idxCount}" value="${safeTitle}" class="table-input"></td>
+                        <td><input type="text" id="ldr_url_${idxCount}" value="${safeUrl}" class="table-input"></td>
+                        <td><button style="padding:6px; font-size:11px; background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${encodeURIComponent(url)}'), ${idxCount})">SAVE</button></td>
+                    </tr>`;
+                    idxCount++;
+                });
+            } finally {
+                historyLoading = false;
+            }
         }
 
         async function inlineSave(oldUrl, idx, defaultCat) {
@@ -450,10 +460,11 @@
             let tar = document.getElementById('moveSelect').value;
             for (let url of selectedUrls) {
                 let item = historyData[url];
-                await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({url: url, title: item.title, category_id: tar}), headers:{'Content-Type':'application/json'} });
+                if (!item) continue;
+                await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: url, url: url, title: item.title, category_id: tar, date: item.date || new Date().toISOString()}), headers:{'Content-Type':'application/json'} });
             }
             clearSelection();
-            loadHistory();
+            await loadHistory();
         }
 
         async function triggerExport(ext) {
@@ -475,9 +486,36 @@
         }
 
         async function triggerSweep() {
-            document.getElementById('sweepBtn').innerText = "EXECUTING... (Reading Android)";
-            await fetch('http://127.0.0.1:8000/api/v1/fetch_now', { method: 'POST' });
-            setTimeout(async () => { await loadHistory(); document.getElementById('sweepBtn').innerText = "FETCH NOW FROM ANDROID"; }, 10000);
+            const btn = document.getElementById('sweepBtn');
+            btn.innerText = "EXECUTING...";
+            btn.disabled = true;
+            try {
+                await fetch('http://127.0.0.1:8000/api/v1/fetch_now', { method: 'POST' });
+            } catch(e) {}
+            // Poll for new results every 5s for up to 10 minutes
+            let elapsed = 0;
+            let lastCount = Object.keys(historyData || {}).length;
+            const pollSweep = setInterval(async () => {
+                elapsed += 5;
+                let mins = Math.floor(elapsed / 60), secs = elapsed % 60;
+                btn.innerText = `FETCHING ${mins}m${secs}s...`;
+                try {
+                    let r = await fetch('http://127.0.0.1:8000/api/v1/history');
+                    let h = await r.json();
+                    let newCount = Object.keys(h).length;
+                    if (newCount !== lastCount) {
+                        lastCount = newCount;
+                        historyData = h;
+                        if (!historyLoading) await loadHistory();
+                    }
+                } catch(e) {}
+                if (elapsed >= 600) {
+                    clearInterval(pollSweep);
+                    btn.innerText = 'FETCH NOW FROM ANDROID';
+                    btn.disabled = false;
+                    await loadHistory();
+                }
+            }, 5000);
         }
 
         async function openSysFolder(type) {
