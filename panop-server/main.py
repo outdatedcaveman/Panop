@@ -11,6 +11,18 @@ import multiprocessing
 
 app = FastAPI(title="Panop Backend Server")
 
+# Live sweep status — readable by the UI via /api/v1/status
+sweep_status = {
+    "last_run": None,
+    "adb_connected": False,
+    "device_id": None,
+    "tabs_seen": 0,
+    "tabs_new": 0,
+    "tabs_matched": 0,
+    "running": False,
+    "last_error": None
+}
+
 ENV_FILE = "panop_env.json"
 
 def get_env():
@@ -175,18 +187,47 @@ def add_chrome_bookmark(url, title, category_name):
         pass
 
 def run_adb_sweep():
+    global sweep_status
+    sweep_status["running"] = True
+    sweep_status["last_run"] = datetime.now().isoformat()
+    sweep_status["last_error"] = None
+    sweep_status["tabs_seen"] = 0
+    sweep_status["tabs_new"] = 0
+    sweep_status["tabs_matched"] = 0
     try:
         adb_exe = ensure_adb()
         config = load_config()
         env = get_env()
         init_dirs()
-        for ip in config.get("wireless_ips", []):
-            subprocess.run([adb_exe, "connect", ip], capture_output=True)
+        
+        # Check what devices are actually connected
+        dev_result = subprocess.run([adb_exe, "devices"], capture_output=True, text=True)
+        lines = [l.strip() for l in dev_result.stdout.splitlines() if l.strip() and "List of" not in l and "offline" not in l]
+        sweep_status["adb_connected"] = len(lines) > 0
+        sweep_status["device_id"] = lines[0].split("\t")[0] if lines else None
+        
+        if not sweep_status["adb_connected"]:
+            for ip in config.get("wireless_ips", []):
+                subprocess.run([adb_exe, "connect", ip], capture_output=True)
+            # Re-check after connect attempts
+            dev_result = subprocess.run([adb_exe, "devices"], capture_output=True, text=True)
+            lines = [l.strip() for l in dev_result.stdout.splitlines() if l.strip() and "List of" not in l and "offline" not in l]
+            sweep_status["adb_connected"] = len(lines) > 0
+            sweep_status["device_id"] = lines[0].split("\t")[0] if lines else None
+
+        if not sweep_status["adb_connected"]:
+            sweep_status["last_error"] = "No Android device found via ADB. Connect phone via USB (with USB Debugging on) or add its IP in System Settings."
+            sweep_status["running"] = False
+            return
             
         subprocess.run([adb_exe, "forward", "tcp:9222", "localabstract:chrome_devtools_remote"], capture_output=True)
-        resp = requests.get("http://127.0.0.1:9222/json/list", timeout=300)
-        if resp.status_code != 200: return
+        resp = requests.get("http://127.0.0.1:9222/json/list", timeout=30)
+        if resp.status_code != 200:
+            sweep_status["last_error"] = f"DevTools returned HTTP {resp.status_code}. Make sure Chrome is open and in the foreground on your phone."
+            sweep_status["running"] = False
+            return
         tabs = resp.json()
+        sweep_status["tabs_seen"] = len(tabs)
         history = load_history()
         categories = config.get("categories", [])
         
@@ -194,6 +235,7 @@ def run_adb_sweep():
             try:
                 url = tab.get("url", "")
                 if url.startswith("chrome://") or not url or url in history: continue
+                sweep_status["tabs_new"] += 1
                 
                 url_lower = url.lower()
                 is_pdf = url_lower.endswith(".pdf")
@@ -276,12 +318,15 @@ def run_adb_sweep():
                     history[url] = {"title": title, "category": matched_category["name"], "cat_id": matched_category["id"], "date": datetime.now().isoformat(), "ai_learned": ai_discovered}
                     save_history(history)
                     add_chrome_bookmark(url, title, matched_category["name"])
+                    sweep_status["tabs_matched"] += 1
 
-            except Exception:
+            except Exception as ex:
                 continue  # skip broken tab, continue sweep
 
     except Exception as e:
-        pass
+        sweep_status["last_error"] = str(e)
+    finally:
+        sweep_status["running"] = False
 
 def adb_loop():
     while True:
@@ -312,6 +357,9 @@ def update_ev(data: dict):
     save_env(data)
     init_dirs()
     return {"status": "ok"}
+
+@app.get("/api/v1/status")
+def get_status(): return sweep_status
 
 @app.get("/api/v1/history")
 def get_hi(): return load_history()

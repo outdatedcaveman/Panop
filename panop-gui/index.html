@@ -66,14 +66,23 @@
         <!-- Dashboard -->
         <div id="dash" class="panel active">
             <h1>Intelligent Feed Matrix</h1>
-            <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <h3 style="margin:0;">Status: <span id="serverBadge" style="color:#ef4444;">Connecting...</span></h3>
-                    <p style="color:#888; margin-top:5px; font-size: 13px;">If you click fetch and nothing drops, your phone might be asleep or the tabs were already recorded in History.</p>
+            <div class="card" style="display:flex; justify-content:space-between; align-items:flex-start; gap:20px;">
+                <div style="flex:1;">
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+                        <h3 style="margin:0;">Server: <span id="serverBadge" style="color:#ef4444;">Connecting...</span></h3>
+                        <span id="sweepRunning" style="display:none; background:#f59e0b; color:#000; padding:3px 8px; border-radius:3px; font-size:11px; font-weight:bold;">⟳ SWEEP RUNNING</span>
+                    </div>
+                    <div id="sweepStatusPanel" style="font-size:12px; color:#666; display:flex; gap:20px; flex-wrap:wrap;">
+                        <span>Device: <span id="stDevice" style="color:#aaa;">—</span></span>
+                        <span>Tabs seen: <span id="stSeen" style="color:#aaa;">—</span></span>
+                        <span>New (not in history): <span id="stNew" style="color:#aaa;">—</span></span>
+                        <span>Matched: <span id="stMatched" style="color:#10b981; font-weight:bold;">—</span></span>
+                    </div>
+                    <div id="sweepError" style="display:none; margin-top:8px; padding:8px 12px; background:#1a0505; border:1px solid #5a1a1a; border-radius:4px; color:#ef4444; font-size:12px;"></div>
                 </div>
                 <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
             </div>
-            <div style="display:flex; gap:20px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; height: calc(100vh - 240px);" id="dashCols"></div>
+            <div style="display:flex; gap:20px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; height: calc(100vh - 280px);" id="dashCols"></div>
         </div>
 
         <!-- Master Ledger Window -->
@@ -226,13 +235,33 @@
                 await fetch('http://127.0.0.1:8000/api/v1/env');
                 document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
                 document.getElementById('serverBadge').style.color = "#10b981";
-                // Only refresh history if not already loading and sweep button is idle
-                if (!historyLoading && document.getElementById('sweepBtn').innerText === 'FETCH NOW FROM ANDROID') {
+                // Fetch sweep status
+                let sr = await fetch('http://127.0.0.1:8000/api/v1/status');
+                let st = await sr.json();
+                updateSweepStatus(st);
+                // Only refresh history if not already loading and no sweep running
+                if (!historyLoading && !st.running && document.getElementById('sweepBtn').innerText === 'FETCH NOW FROM ANDROID') {
                     await loadHistory();
                 }
             } catch(e) {
                 document.getElementById('serverBadge').textContent = "OFFLINE";
                 document.getElementById('serverBadge').style.color = "#ef4444";
+            }
+        }
+
+        function updateSweepStatus(st) {
+            document.getElementById('stDevice').textContent = st.device_id || (st.adb_connected ? 'Connected' : 'Not connected');
+            document.getElementById('stDevice').style.color = st.adb_connected ? '#10b981' : '#ef4444';
+            document.getElementById('stSeen').textContent = st.tabs_seen !== undefined ? st.tabs_seen : '—';
+            document.getElementById('stNew').textContent = st.tabs_new !== undefined ? st.tabs_new : '—';
+            document.getElementById('stMatched').textContent = st.tabs_matched !== undefined ? st.tabs_matched : '—';
+            document.getElementById('sweepRunning').style.display = st.running ? 'inline-block' : 'none';
+            let errDiv = document.getElementById('sweepError');
+            if (st.last_error) {
+                errDiv.style.display = 'block';
+                errDiv.textContent = '⚠ ' + st.last_error;
+            } else {
+                errDiv.style.display = 'none';
             }
         }
 
