@@ -140,6 +140,8 @@ def fetch_page_content(url):
     return metadata
 
 def add_chrome_bookmark(url, title, category_name):
+    """Saves a bookmark into the user's existing Chrome 'Outro Favoritos' (Other Bookmarks),
+    placing it directly inside a folder matching the category name. Creates the folder if missing."""
     profile = os.environ.get("USERPROFILE")
     if not profile: return
     book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Bookmarks")
@@ -147,27 +149,28 @@ def add_chrome_bookmark(url, title, category_name):
     try:
         with open(book_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        
+        # 'other' IS 'Outro Favoritos' in Portuguese Chrome
         other = data.get("roots", {}).get("other", {})
         if "children" not in other:
             other["children"] = []
-            
-        panop_folder = next((c for c in other["children"] if c.get("name") == "Panop" and c.get("type") == "folder"), None)
-        if not panop_folder:
-            stamp = str(int(time.time() * 1000000))
-            panop_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "name": "Panop", "type": "folder"}
-            other["children"].append(panop_folder)
-            
-        cat_folder = next((c for c in panop_folder["children"] if c.get("name") == category_name and c.get("type") == "folder"), None)
+        
+        # Look for an existing folder with this category name directly inside Outro Favoritos
+        cat_folder = next(
+            (c for c in other["children"] if c.get("type") == "folder" and c.get("name", "").lower() == category_name.lower()),
+            None
+        )
         if not cat_folder:
             stamp = str(int(time.time() * 1000000))
-            cat_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "name": category_name, "type": "folder"}
-            panop_folder["children"].append(cat_folder)
-            
-        if not any(c.get("url") == url for c in cat_folder["children"]):
+            cat_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "guid": "", "name": category_name, "type": "folder"}
+            other["children"].append(cat_folder)
+        
+        # Add bookmark only if not already present
+        if not any(c.get("url") == url for c in cat_folder.get("children", [])):
             stamp = str(int(time.time() * 1000000))
-            cat_folder["children"].append({"date_added": stamp, "name": title, "type": "url", "url": url})
+            cat_folder["children"].append({"date_added": stamp, "date_last_used": "0", "guid": "", "name": title, "type": "url", "url": url})
             with open(book_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+                json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
 

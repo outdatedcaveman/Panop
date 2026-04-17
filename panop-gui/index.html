@@ -17,7 +17,7 @@
         
         h1 { color: #fff; border-bottom: 2px solid #222; padding-bottom: 10px; font-size: 28px; font-weight: 300;}
         .card { background: #0a0a0a; border: 1px solid #222; border-left: 4px solid #ef4444; border-radius: 6px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
-        .col-card { background: #0a0a0a; border: 1px solid #222; border-top: 4px solid #ef4444; border-radius: 6px; padding: 15px; flex: 1; min-width: 300px; height: 500px; overflow-y: auto;}
+        .col-card { background: #0a0a0a; border: 1px solid #222; border-top: 4px solid #ef4444; border-radius: 6px; padding: 15px; flex: 1; min-width: 380px; height: calc(100vh - 260px); overflow-y: auto;}
         
         button { background: #ef4444; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
         button:hover { background: #b91c1c; }
@@ -73,7 +73,7 @@
                 </div>
                 <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
             </div>
-            <div style="display:flex; gap:20px; overflow-x:auto; padding-bottom:10px;" id="dashCols"></div>
+            <div style="display:flex; gap:20px; overflow-x:auto; overflow-y:hidden; padding-bottom:10px; height: calc(100vh - 240px);" id="dashCols"></div>
         </div>
 
         <!-- Master Ledger Window -->
@@ -102,8 +102,8 @@
 
         <!-- Categories -->
         <div id="categories" class="panel">
-            <h1>Algorithmic Engine Constraints</h1>
-            <p style="color:#aaa; font-size: 14px;">If Domain Triggers are active, Panop checks if the strings physically exist *anywhere* in the URL (Substrings).</p>
+            <h1>Categories</h1>
+            <p style="color:#aaa; font-size: 14px;">Domain triggers check if the string exists anywhere in the URL. Body keywords are checked against the page text. Use the mode selector to set whether ALL or just ANY keyword must match.</p>
             <div id="categoriesWrapper"></div>
             <button onclick="addCategory()" style="margin-bottom:20px;" class="secondary">+ Add Logical Category</button>
             <button onclick="saveCategories()" style="background:#10b981; float:right;">Save Pipeline Config</button>
@@ -111,7 +111,7 @@
 
         <!-- Network / Global Config -->
         <div id="network" class="panel">
-            <h1>Deep System Settings</h1>
+            <h1>System Settings</h1>
             <div class="card">
                 <h3>Automation Timers</h3>
                 <div class="cat-row">
@@ -163,7 +163,7 @@
 
         <!-- Export -->
         <div id="export" class="panel">
-            <h1>Total Database Exports</h1>
+            <h1>File Exports</h1>
             <div class="card" style="display:flex; flex-direction:column; gap:15px;">
                 <p style="color:#aaa;">Generate flat document versions of your entire Panop graph.</p>
                 <div><button onclick="triggerExport('json')">Download JSON Document</button> <span style="color:#666; font-size:12px; margin-left:10px;">Raw programmable dictionary mappings</span></div>
@@ -272,6 +272,9 @@
                         <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><input type="text" id="cat_req_${idx}" value="${(cat.body_required || []).join(', ')}" /></div>
                         <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><input type="text" id="cat_for_${idx}" value="${(cat.body_forbidden || []).join(', ')}" /></div>
                     </div>
+                    <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+                        <button class="secondary" style="background:#1a0a0a; color:#ef4444; border:1px solid #3a1010; font-size:12px; padding:6px 12px;" onclick="removeCategory(${idx})">✕ Remove Category</button>
+                    </div>
                 </div>`;
             });
             document.getElementById('moveSelect').innerHTML = s;
@@ -279,6 +282,12 @@
 
         function addCategory() {
             configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_required_mode: "ALL", body_forbidden: [], tab_group: "", max_age_days: "" });
+            renderCategories();
+        }
+
+        function removeCategory(idx) {
+            if (!confirm(`Remove category "${configData.categories[idx].name}"? This only removes it from Panop's config — your existing files and bookmarks are untouched.`)) return;
+            configData.categories.splice(idx, 1);
             renderCategories();
         }
 
