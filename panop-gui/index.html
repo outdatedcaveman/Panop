@@ -129,10 +129,28 @@
         <!-- Master Ledger Window -->
         <div id="ledger" class="panel">
             <h1>Master Archive Ledger</h1>
-            <p style="color:#aaa; font-size: 14px;">Total chronological timeline of all documents processed and accepted by Panop across all categories.</p>
-            <div class="card" style="overflow-x: auto; max-height: 70vh; overflow-y: auto;">
+            <p style="color:#aaa; font-size:14px;">Full editable history. All changes save directly to the database.</p>
+            <!-- Ledger filter bar -->
+            <div class="filter-bar">
+                <input class="fbar-search" type="text" id="ldrSearch" placeholder="🔍  Search title or URL..." oninput="applyLedgerFilters()">
+                <select id="ldrCatFilter" onchange="applyLedgerFilters()" style="min-width:140px;">
+                    <option value="">All Categories</option>
+                </select>
+                <input type="date" id="ldrDateFrom" onchange="applyLedgerFilters()" title="From date">
+                <input type="date" id="ldrDateTo" onchange="applyLedgerFilters()" title="To date">
+                <button class="secondary" onclick="clearLedgerFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
+            </div>
+            <div class="results-count" id="ldrCount"></div>
+            <div style="height:calc(100vh - 320px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
                 <table id="ledgerTable">
-                    <thead><tr><th style="width:20px;"><input type="checkbox" onchange="selectAllHistory(this.checked)"></th><th style="width:120px;">Date</th><th style="width:150px;">Category</th><th>Document Title</th><th>Source URL</th><th style="width:50px;">Act</th></tr></thead>
+                    <thead><tr>
+                        <th style="width:22px;"><input type="checkbox" onchange="selectAllHistory(this.checked)"></th>
+                        <th style="width:100px;">Date</th>
+                        <th style="width:140px;">Category</th>
+                        <th>Document Title</th>
+                        <th>Source URL</th>
+                        <th style="width:60px;">Act</th>
+                    </tr></thead>
                     <tbody id="ledgerBody"></tbody>
                 </table>
             </div>
@@ -237,13 +255,26 @@
         let historyData = null;
         let selectedUrls = new Set();
         let envData = null;
-        let historyLoading = false;  // crash guard: prevent concurrent DOM rebuilds
+        let historyLoading = false;
+        let pollCount = 0;  // used to throttle expensive polls
 
         function switchPanel(id) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            // Works both from nav clicks (event.currentTarget) and programmatic calls
+            let target = (typeof event !== 'undefined' && event && event.currentTarget) ? event.currentTarget : null;
+            if (target) {
+                target.classList.add('active');
+            } else {
+                document.querySelectorAll('.nav-item').forEach(n => {
+                    if (n.getAttribute('onclick') && n.getAttribute('onclick').includes(`'${id}'`)) n.classList.add('active');
+                });
+            }
+        }
+
+        function openUrl(url) {
+            try { require('electron').shell.openExternal(url); } catch(e) {}
         }
 
         async function init() {
@@ -271,6 +302,7 @@
         }
         
         async function pollBackground() {
+            pollCount++;
             try {
                 await fetch('http://127.0.0.1:8000/api/v1/env');
                 document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
@@ -278,7 +310,7 @@
                 let sr = await fetch('http://127.0.0.1:8000/api/v1/status');
                 let st = await sr.json();
                 updateSweepStatus(st);
-                // Poll enrich status too
+                // Poll enrich status
                 let er = await fetch('http://127.0.0.1:8000/api/v1/history/enrich/status');
                 let et = await er.json();
                 let eb = document.getElementById('enrichBtn');
@@ -292,18 +324,18 @@
                     eb.textContent = '✦ Enrich Titles';
                     eb.disabled = false;
                 }
-                // Poll duplicate count (cheap call, no parallel fetch needed)
-                try {
-                    let dr = await fetch('http://127.0.0.1:8000/api/v1/history/duplicates');
-                    let dt = await dr.json();
-                    let dw = document.getElementById('dupesWrap');
-                    if (dt.total_groups > 0) {
-                        dw.style.display = 'inline';
-                        document.getElementById('stDupes').textContent = `${dt.total_groups} title group(s) — check Ledger`;
-                    } else {
-                        dw.style.display = 'none';
-                    }
-                } catch(e) {}
+                // Throttle: only check duplicates every 6th poll (~60s)
+                if (pollCount % 6 === 1) {
+                    try {
+                        let dr = await fetch('http://127.0.0.1:8000/api/v1/history/duplicates');
+                        let dt = await dr.json();
+                        let dw = document.getElementById('dupesWrap');
+                        if (dt.total_groups > 0) {
+                            dw.style.display = 'inline';
+                            document.getElementById('stDupes').textContent = `${dt.total_groups} group(s) — check Ledger`;
+                        } else { dw.style.display = 'none'; }
+                    } catch(e) {}
+                }
                 if (!historyLoading && !st.running && !et.running && document.getElementById('sweepBtn').innerText.startsWith('FETCH')) {
                     await loadHistory();
                 }
@@ -485,17 +517,24 @@
                 let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let enc = encodeURIComponent(r.url);
+                let hasAbstract = !!(r.abstract && r.abstract.trim());
+                let abstractRow = hasAbstract
+                    ? `<tr id="abs_${i}" style="display:none;"><td colspan="6" style="background:#0a0a14; padding:12px 16px; color:#94a3b8; font-size:12px; line-height:1.6; border-bottom:1px solid #1e1e1e;">${r.abstract.replace(/</g,'&lt;')}</td></tr>`
+                    : '';
                 tb.innerHTML += `<tr>
                     <td><input type="checkbox" style="width:auto;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="dash_chk_all"></td>
                     <td style="white-space:nowrap; font-size:12px; color:#666;"><input type="text" id="ddt_${i}" value="${r.date}" class="table-input" style="width:95px;"></td>
                     <td><span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span></td>
-                    <td class="title-cell"><input type="text" id="dti_${i}" value="${safeTitle}" title="${safeTitle}" class="table-input"></td>
-                    <td class="url-cell"><a href="${safeUrl}" title="${safeUrl}" style="color:#3b82f6; text-decoration:none;" onclick="event.preventDefault(); require('electron').shell.openExternal('${safeUrl}')">${r.url}</a></td>
+                    <td class="title-cell">
+                        <input type="text" id="dti_${i}" value="${safeTitle}" title="${safeTitle}" class="table-input">
+                        ${hasAbstract ? `<span style="margin-left:4px; font-size:9px; color:#475569; cursor:pointer;" onclick="let e=document.getElementById('abs_${i}'); e.style.display=e.style.display==='none'?'table-row':'none'" title="Toggle abstract">▼ abstract</span>` : ''}
+                    </td>
+                    <td class="url-cell"><a href="#" title="${safeUrl}" style="color:#3b82f6; text-decoration:none;" onclick="event.preventDefault(); openUrl('${safeUrl}')">${r.url}</a></td>
                     <td style="white-space:nowrap;">
                         <button style="padding:3px 7px; font-size:10px; background:#1e293b;" title="Save edits" onclick="inlineSaveDash(decodeURIComponent('${enc}'), ${i}, '${r.catId}')">💾</button>
                         <button style="padding:3px 7px; font-size:10px; background:#3b1c1c;" title="Delete" onclick="deleteSingle(decodeURIComponent('${enc}'))">✕</button>
                     </td>
-                </tr>`;
+                </tr>${abstractRow}`;
             });
         }
 
@@ -528,45 +567,86 @@
                 let res = await fetch('http://127.0.0.1:8000/api/v1/history');
                 historyData = await res.json();
 
-                // Build master rows array (newest first)
+                // Build master rows array (newest first), include abstract if present
                 dashRows = Object.entries(historyData).reverse().map(([url, item]) => ({
                     url,
                     title: item.title || 'Untitled',
                     category: item.category || 'Uncategorized',
                     catId: item.cat_id || 'uncategorized',
-                    date: item.date ? item.date.split('T')[0] : ''
+                    date: item.date ? item.date.split('T')[0] : '',
+                    abstract: item.abstract || ''
                 }));
 
                 rebuildCatFilter();
                 applyFilters();
-
-                // Also populate ledger
-                const tb = document.getElementById('ledgerBody');
-                if (tb) {
-                    tb.innerHTML = '';
-                    dashRows.forEach((r, i) => {
-                        let chk = selectedUrls.has(r.url) ? 'checked' : '';
-                        let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-                        let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-                        let enc = encodeURIComponent(r.url);
-                        tb.innerHTML += `<tr>
-                            <td><div style="display:flex;align-items:center;gap:4px;">
-                                <input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all">
-                                <input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:95px;">
-                            </div></td>
-                            <td><select id="ldr_cat_${i}" class="table-input">
-                                ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===r.catId?'selected':''}>${c.name}</option>`).join('')}
-                                <option value="uncategorized" ${r.catId==='uncategorized'?'selected':''}>Uncategorized</option>
-                            </select></td>
-                            <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input"></td>
-                            <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
-                            <td><button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button></td>
-                        </tr>`;
-                    });
-                }
+                rebuildLedgerCatFilter();
+                applyLedgerFilters();
             } finally {
                 historyLoading = false;
             }
+        }
+
+        /* ── Ledger filter engine (mirrors dashboard) ─────────────── */
+        let ldrRows = [];
+
+        function rebuildLedgerCatFilter() {
+            let sel = document.getElementById('ldrCatFilter');
+            if (!sel) return;
+            let prev = sel.value;
+            sel.innerHTML = '<option value="">All Categories</option>';
+            let cats = new Set(dashRows.map(r => r.category));
+            cats.forEach(c => { let o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+            sel.value = prev || '';
+        }
+
+        function applyLedgerFilters() {
+            let q = (document.getElementById('ldrSearch').value || '').toLowerCase();
+            let cat = document.getElementById('ldrCatFilter').value;
+            let from = document.getElementById('ldrDateFrom').value;
+            let to = document.getElementById('ldrDateTo').value;
+            ldrRows = dashRows.filter(r => {
+                if (q && !r.title.toLowerCase().includes(q) && !r.url.toLowerCase().includes(q)) return false;
+                if (cat && r.category !== cat) return false;
+                if (from && r.date < from) return false;
+                if (to && r.date > to) return false;
+                return true;
+            });
+            renderLedgerRows(ldrRows);
+            let cnt = document.getElementById('ldrCount');
+            if (cnt) cnt.textContent = `${ldrRows.length} of ${dashRows.length} entries`;
+        }
+
+        function clearLedgerFilters() {
+            document.getElementById('ldrSearch').value = '';
+            document.getElementById('ldrCatFilter').value = '';
+            document.getElementById('ldrDateFrom').value = '';
+            document.getElementById('ldrDateTo').value = '';
+            applyLedgerFilters();
+        }
+
+        function renderLedgerRows(rows) {
+            const tb = document.getElementById('ledgerBody');
+            if (!tb) return;
+            tb.innerHTML = '';
+            rows.forEach((r, i) => {
+                let chk = selectedUrls.has(r.url) ? 'checked' : '';
+                let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let enc = encodeURIComponent(r.url);
+                tb.innerHTML += `<tr>
+                    <td><div style="display:flex;align-items:center;gap:4px;">
+                        <input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all">
+                        <input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:95px;">
+                    </div></td>
+                    <td><select id="ldr_cat_${i}" class="table-input">
+                        ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===r.catId?'selected':''}>${c.name}</option>`).join('')}
+                        <option value="uncategorized" ${r.catId==='uncategorized'?'selected':''}>Uncategorized</option>
+                    </select></td>
+                    <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input"></td>
+                    <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
+                    <td><button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button></td>
+                </tr>`;
+            });
         }
 
         async function inlineSave(oldUrl, idx, defaultCat) {

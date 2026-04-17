@@ -518,6 +518,11 @@ def run_enrich():
     enrich_status.update({"running": True, "done": 0, "updated": 0, "last_run": datetime.now().isoformat()})
     try:
         h = load_history()
+        # Safety: back up history before any mutations
+        import shutil
+        hf = HISTORY_FILE()
+        if os.path.exists(hf):
+            shutil.copy2(hf, hf + ".bak")
         BAD = {"", "untitled", "untitled pdf", "loading..."}
         candidates = [(url, item) for url, item in h.items()
                       if (item.get("title") or "").strip().lower() in BAD]
