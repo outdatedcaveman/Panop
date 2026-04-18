@@ -816,6 +816,11 @@ def sync_single(url: str, type: str):
         return {"status": "ok"}
     return {"status": "error"}
 
+@app.post("/api/v1/history/merge")
+def manual_merge():
+    merged_count = consolidate_history()
+    return {"status": "ok", "merged": merged_count}
+
 @app.post("/api/v1/history/enrich")
 def enrich_hi(background_tasks: BackgroundTasks):
     if enrich_status["running"]:
