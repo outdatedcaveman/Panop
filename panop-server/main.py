@@ -798,6 +798,24 @@ def trigger_sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_bulk_sync)
     return {"status": "started"}
 
+@app.post("/api/v1/history/sync_single")
+def sync_single(url: str, type: str):
+    h = load_history()
+    if url not in h: return {"status": "error", "message": "not found"}
+    item = h[url]
+    ok = False
+    if type == 'zotero':
+        ok = send_to_zotero(url, item.get("title"), item.get("abstract"), item.get("category"))
+        if ok: item["z_synced"] = True
+    elif type == 'bookmark':
+        ok = add_chrome_bookmark(url, item.get("title"), item.get("category"))
+        if ok: item["b_synced"] = True
+    
+    if ok:
+        save_history(h)
+        return {"status": "ok"}
+    return {"status": "error"}
+
 @app.post("/api/v1/history/enrich")
 def enrich_hi(background_tasks: BackgroundTasks):
     if enrich_status["running"]:
