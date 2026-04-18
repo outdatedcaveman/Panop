@@ -584,11 +584,10 @@ def run_adb_sweep():
                     save_history(history)
                     sweep_status["tabs_matched"] += 1
 
-                    # AUTO-CLEANUP: Close tab on phone if enabled
-                    if env.get("close_tabs_after_save") and tab_id:
+                    # AUTO-CLEANUP: Close tab on phone ONLY if enabled AND saved to BOTH Zotero and Bookmarks
+                    if env.get("close_tabs_after_save") and tab_id and z_ok and b_ok:
                         try:
                             # DevTools close endpoint: POST http://localhost:9222/json/close/[id]
-                            # This is safe because it only happens AFTER the entry is successfully saved to history.
                             requests.post(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
                         except Exception:
                             pass
@@ -777,16 +776,16 @@ def run_enrich():
     finally:
         enrich_status["running"] = False
 
-def run_bulk_sync():
+def run_bulk_sync(sync_type=None):
     """Retries Zotero/Bookmark sync for all entries marked as unsynced."""
     h = load_history()
     changed = False
     for url, item in h.items():
-        if not item.get("z_synced"):
+        if (sync_type is None or sync_type == 'zotero') and not item.get("z_synced"):
             if send_to_zotero(url, item.get("title"), item.get("abstract"), item.get("category")):
                 item["z_synced"] = True
                 changed = True
-        if not item.get("b_synced"):
+        if (sync_type is None or sync_type == 'bookmark') and not item.get("b_synced"):
             if add_chrome_bookmark(url, item.get("title"), item.get("category")):
                 item["b_synced"] = True
                 changed = True
@@ -794,8 +793,9 @@ def run_bulk_sync():
         save_history(h)
 
 @app.post("/api/v1/history/sync")
-def trigger_sync(background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_bulk_sync)
+def trigger_sync(type: str = None):
+    # run in background
+    threading.Thread(target=run_bulk_sync, args=(type,), daemon=True).start()
     return {"status": "started"}
 
 @app.post("/api/v1/history/sync_single")
