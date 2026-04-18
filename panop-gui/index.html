@@ -61,6 +61,13 @@
         .url-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3b82f6; font-size:11px; }
         .title-cell { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .results-count { font-size:12px; color:#666; margin-bottom:6px; }
+        .filter-bar button.active {
+            background: #f59e0b !important;
+            color: #1a0a0a !important;
+            border-color: #f59e0b !important;
+        }
+        #dupesWrap { display:none; cursor:pointer; padding:2px 8px; border-radius:4px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); }
+        #dupesWrap:hover { background: rgba(245, 158, 11, 0.2); }
     </style>
 </head>
 <body>
@@ -88,7 +95,9 @@
                         <span>Tabs seen: <span id="stSeen" style="color:#aaa;">—</span></span>
                         <span>New (not in history): <span id="stNew" style="color:#aaa;">—</span></span>
                         <span>Matched: <span id="stMatched" style="color:#10b981; font-weight:bold;">—</span></span>
-                        <span id="dupesWrap" style="display:none;">⚠ Duplicates: <span id="stDupes" style="color:#f59e0b; font-weight:bold; cursor:pointer;" onclick="switchPanel('ledger')" title="Switch to Ledger to review">—</span></span>
+                        <span id="dupesWrap" onclick="switchPanel('ledger'); document.getElementById('ldrDupesToggle').classList.add('active'); applyLedgerFilters();" title="Click to view all potential duplicates in Ledger">
+                            <span style="color:#f59e0b; cursor:pointer;">⚠ Duplicates:</span> <span id="stDupes" style="color:#fff; font-weight:bold; cursor:pointer;">0 group(s) — click to view</span>
+                        </span>
                     </div>
                     <div id="sweepError" style="display:none; margin-top:8px; padding:8px 12px; background:#1a0505; border:1px solid #5a1a1a; border-radius:4px; color:#ef4444; font-size:12px;"></div>
                 </div>
@@ -138,6 +147,9 @@
                 </select>
                 <input type="date" id="ldrDateFrom" onchange="applyLedgerFilters()" title="From date">
                 <input type="date" id="ldrDateTo" onchange="applyLedgerFilters()" title="To date">
+                <button id="ldrDupesToggle" class="secondary" style="font-size:12px; padding:7px 12px; display:flex; align-items:center; gap:6px; white-space:nowrap;" onclick="toggleDupesFilter()">
+                    ⚠️ Show Only Duplicates
+                </button>
                 <button class="secondary" onclick="clearLedgerFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
             </div>
             <div class="results-count" id="ldrCount"></div>
@@ -288,6 +300,7 @@
         let historyLoading = false;
         let pollCount = 0;  // used to throttle expensive polls
         let historyVersion = null; // prevents redundant UI re-renders
+        let duplicateUrls = new Set(); // holds all URLs that are part of a duplicate group
 
         function switchPanel(id) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -363,10 +376,16 @@
                         let dr = await fetch('http://127.0.0.1:8000/api/v1/history/duplicates');
                         let dt = await dr.json();
                         let dw = document.getElementById('dupesWrap');
+                        duplicateUrls.clear();
                         if (dt.total_groups > 0) {
                             dw.style.display = 'inline';
-                            document.getElementById('stDupes').textContent = `${dt.total_groups} group(s) — check Ledger`;
+                            document.getElementById('stDupes').textContent = `${dt.total_groups} group(s) — click to view`;
+                            // Flatten all duplicate group URLs into our global set
+                            Object.values(dt.groups).forEach(group => {
+                                group.forEach(item => duplicateUrls.add(item.url));
+                            });
                         } else { dw.style.display = 'none'; }
+                        rebuildLedgerCatFilter(); // update duplicate count in UI if needed
                     } catch(e) {}
                 }
                 if (!historyLoading && !st.running && !et.running && document.getElementById('sweepBtn').innerText.startsWith('FETCH')) {
@@ -558,6 +577,12 @@
             document.getElementById('dashCount').textContent = `${filtered.length} of ${dashRows.length} entries`;
         }
 
+        function toggleDupesFilter() {
+            const btn = document.getElementById('ldrDupesToggle');
+            btn.classList.toggle('active');
+            applyLedgerFilters();
+        }
+
         function sortTable(col) {
             if (dashSortCol === col) dashSortDir = dashSortDir === 'asc' ? 'desc' : 'asc';
             else { dashSortCol = col; dashSortDir = 'asc'; }
@@ -686,7 +711,10 @@
             let cat = document.getElementById('ldrCatFilter').value;
             let from = document.getElementById('ldrDateFrom').value;
             let to = document.getElementById('ldrDateTo').value;
+            let showOnlyDupes = document.getElementById('ldrDupesToggle').classList.contains('active');
+
             ldrRows = dashRows.filter(r => {
+                if (showOnlyDupes && !duplicateUrls.has(r.url)) return false;
                 if (q && !r.title.toLowerCase().includes(q) && !r.url.toLowerCase().includes(q)) return false;
                 if (cat && r.category !== cat) return false;
                 if (from && r.date < from) return false;
@@ -714,7 +742,8 @@
                 let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let enc = encodeURIComponent(r.url);
-                return `<tr>
+                let isDupe = duplicateUrls.has(r.url);
+                return `<tr style="${isDupe ? 'background: rgba(245, 158, 11, 0.05);' : ''}">
                     <td><div style="display:flex;align-items:center;gap:4px;">
                         <input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all">
                         <input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:95px;">
@@ -725,7 +754,12 @@
                     </select></td>
                     <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input"></td>
                     <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
-                    <td><button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button></td>
+                    <td>
+                        <div style="display:flex; gap:5px;">
+                            ${isDupe ? '<span title="Duplicate entry detected" style="cursor:help; font-size:14px;">⚠️</span>' : ''}
+                            <button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button>
+                        </div>
+                    </td>
                 </tr>`;
             }).join('');
             tb.innerHTML = fragment;
