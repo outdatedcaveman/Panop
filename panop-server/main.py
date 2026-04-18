@@ -150,22 +150,33 @@ def ensure_adb():
 
 def fetch_page_content(url):
     """Returns metadata dict. On network failure returns None.
-    Always follows redirects; metadata includes 'canonical_url' (final address after redirects).
+    Caps response at 200KB to prevent huge pages from bloating memory.
     """
     try:
-        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
         if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
+            # Read at most 200 KB — enough for title + abstract, avoids loading giant pages
+            raw = b""
+            for chunk in resp.iter_content(chunk_size=8192):
+                raw += chunk
+                if len(raw) > 200_000:
+                    break
+            html = raw.decode("utf-8", errors="ignore")
+            soup = BeautifulSoup(html, 'html.parser')
             metadata = {}
-            metadata["canonical_url"] = resp.url  # final URL after all redirects
-            metadata["text"] = soup.get_text().lower()
+            metadata["canonical_url"] = resp.url
+            # Cap extracted text at 50K chars — more than enough for keyword matching
+            text = soup.get_text()
+            metadata["text"] = text[:50_000].lower()
             t = soup.find("meta", {"name": "citation_title"})
             metadata["title"] = t.get("content", "") if t else (soup.title.string if soup.title else "")
             ab = soup.find("meta", {"name": "description"})
             if ab: metadata["abstract"] = ab.get("content", "")
+            del soup, html, raw, text  # explicitly free memory
             return metadata
     except Exception:
         pass
+    return None
     return None
 
 def get_pdf_title(url, tab_title=""):
@@ -437,8 +448,8 @@ def run_adb_sweep():
                 title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
             return (url, cat, title, metadata or {})
 
-        # Run up to 20 tabs in parallel
-        WORKERS = 20
+        # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
+        WORKERS = 8
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
@@ -504,15 +515,29 @@ def run_adb_sweep():
         sweep_status["running"] = False
 
 def adb_loop():
+    """Background timer loop. Waits for the configured interval FIRST,
+    then sweeps. This means startup is instant — sweeps only happen on schedule
+    or when the user manually clicks FETCH NOW.
+    """
     while True:
-        run_adb_sweep()
         hours = get_env().get("interval_hours", 6)
         if hours < 0.1: hours = 0.1
-        time.sleep(hours * 3600)
+        time.sleep(hours * 3600)  # wait first, then sweep
+        run_adb_sweep()
 
 @app.on_event("startup")
 def start_background_jobs():
+    import gc
     init_dirs()
+    # Kill any stale panop-server siblings left from a previous crashed run
+    try:
+        import psutil
+        me = os.getpid()
+        for proc in psutil.process_iter(['pid', 'name']):
+            if proc.info['name'] and 'panop-server' in proc.info['name'].lower() and proc.info['pid'] != me:
+                proc.kill()
+    except Exception:
+        pass
     threading.Thread(target=adb_loop, daemon=True).start()
 
 @app.get("/api/v1/config")
@@ -543,6 +568,14 @@ def get_status(): return sweep_status
 
 @app.get("/api/v1/history")
 def get_hi(): return load_history()
+
+@app.get("/api/v1/history/meta")
+def get_hi_meta():
+    """Lightweight endpoint: returns count + a version token.
+    The UI polls this cheaply to know whether a full reload is needed."""
+    h = load_history()
+    return {"count": len(h), "version": hash(tuple(sorted(h.keys()))) & 0xFFFFFFFF}
+
 
 class EditItem(BaseModel):
     old_url: str

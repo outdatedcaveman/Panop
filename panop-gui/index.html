@@ -287,6 +287,7 @@
         let envData = null;
         let historyLoading = false;
         let pollCount = 0;  // used to throttle expensive polls
+        let historyVersion = null; // prevents redundant UI re-renders
 
         function switchPanel(id) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -369,7 +370,18 @@
                     } catch(e) {}
                 }
                 if (!historyLoading && !st.running && !et.running && document.getElementById('sweepBtn').innerText.startsWith('FETCH')) {
-                    await loadHistory();
+                    // Optimized: only reload if history has actually changed on disk
+                    try {
+                        let mr = await fetch('http://127.0.0.1:8000/api/v1/history/meta');
+                        let meta = await mr.json();
+                        if (meta.version !== historyVersion) {
+                            await loadHistory();
+                            historyVersion = meta.version;
+                        }
+                    } catch(e) { 
+                        // Fallback purely for safety if meta fails
+                        await loadHistory(); 
+                    }
                 }
             } catch(e) {
                 document.getElementById('serverBadge').textContent = "OFFLINE";
@@ -577,8 +589,7 @@
         function renderDashRows(rows) {
             const tb = document.getElementById('dashBody');
             if (!tb) return;
-            tb.innerHTML = '';
-            rows.forEach((r, i) => {
+            const fragment = rows.map((r, i) => {
                 let chk = selectedUrls.has(r.url) ? 'checked' : '';
                 let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -587,7 +598,7 @@
                 let abstractRow = hasAbstract
                     ? `<tr id="abs_${i}" style="display:none;"><td colspan="6" style="background:#0a0a14; padding:12px 16px; color:#94a3b8; font-size:12px; line-height:1.6; border-bottom:1px solid #1e1e1e;">${r.abstract.replace(/</g,'&lt;')}</td></tr>`
                     : '';
-                tb.innerHTML += `<tr>
+                return `<tr>
                     <td><input type="checkbox" style="width:auto;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="dash_chk_all"></td>
                     <td style="white-space:nowrap; font-size:12px; color:#666;"><input type="text" id="ddt_${i}" value="${r.date}" class="table-input" style="width:95px;"></td>
                     <td><span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span></td>
@@ -601,7 +612,8 @@
                         <button style="padding:3px 7px; font-size:10px; background:#3b1c1c;" title="Delete" onclick="deleteSingle(decodeURIComponent('${enc}'))">✕</button>
                     </td>
                 </tr>${abstractRow}`;
-            });
+            }).join('');
+            tb.innerHTML = fragment;
         }
 
         function selectAllDash(checked) {
@@ -630,6 +642,10 @@
             if (historyLoading) return;
             historyLoading = true;
             try {
+                let mr = await fetch('http://127.0.0.1:8000/api/v1/history/meta');
+                let meta = await mr.json();
+                historyVersion = meta.version;
+
                 let res = await fetch('http://127.0.0.1:8000/api/v1/history');
                 historyData = await res.json();
 
@@ -693,13 +709,12 @@
         function renderLedgerRows(rows) {
             const tb = document.getElementById('ledgerBody');
             if (!tb) return;
-            tb.innerHTML = '';
-            rows.forEach((r, i) => {
+            const fragment = rows.map((r, i) => {
                 let chk = selectedUrls.has(r.url) ? 'checked' : '';
                 let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
                 let enc = encodeURIComponent(r.url);
-                tb.innerHTML += `<tr>
+                return `<tr>
                     <td><div style="display:flex;align-items:center;gap:4px;">
                         <input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all">
                         <input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:95px;">
@@ -712,7 +727,8 @@
                     <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
                     <td><button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button></td>
                 </tr>`;
-            });
+            }).join('');
+            tb.innerHTML = fragment;
         }
 
         async function inlineSave(oldUrl, idx, defaultCat) {
