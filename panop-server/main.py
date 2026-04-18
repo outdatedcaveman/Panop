@@ -325,8 +325,10 @@ def add_chrome_bookmark(url, title, category_name):
             })
             with open(book_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
+            return True
     except Exception:
         pass
+    return False
 
 
 def send_to_zotero(url, title, abstract, category_name):
@@ -563,6 +565,9 @@ def run_adb_sweep():
                     with open(os.path.join(target_dir, f"{fname}.json"), "w", encoding="utf-8") as f:
                         json.dump(entry_data, f, indent=2, ensure_ascii=False)
 
+                    z_ok = send_to_zotero(url, title, metadata.get("abstract", ""), matched_category["name"])
+                    b_ok = add_chrome_bookmark(url, title, matched_category["name"])
+
                     history[url] = {
                         "title": title,
                         "category": matched_category["name"],
@@ -571,11 +576,11 @@ def run_adb_sweep():
                         "abstract": metadata.get("abstract", ""),
                         "canonical_url": metadata.get("canonical_url", url),
                         "ai_learned": False,
-                        "file": os.path.join(target_dir, f"{fname}.json")
+                        "file": os.path.join(target_dir, f"{fname}.json"),
+                        "z_synced": z_ok,
+                        "b_synced": b_ok
                     }
                     save_history(history)
-                    add_chrome_bookmark(url, title, matched_category["name"])
-                    send_to_zotero(url, title, metadata.get("abstract", ""), matched_category["name"])
                     sweep_status["tabs_matched"] += 1
 
                 except Exception:
@@ -761,6 +766,27 @@ def run_enrich():
         enrich_status["updated"] += m_count
     finally:
         enrich_status["running"] = False
+
+def run_bulk_sync():
+    """Retries Zotero/Bookmark sync for all entries marked as unsynced."""
+    h = load_history()
+    changed = False
+    for url, item in h.items():
+        if not item.get("z_synced"):
+            if send_to_zotero(url, item.get("title"), item.get("abstract"), item.get("category")):
+                item["z_synced"] = True
+                changed = True
+        if not item.get("b_synced"):
+            if add_chrome_bookmark(url, item.get("title"), item.get("category")):
+                item["b_synced"] = True
+                changed = True
+    if changed:
+        save_history(h)
+
+@app.post("/api/v1/history/sync")
+def trigger_sync(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_bulk_sync)
+    return {"status": "started"}
 
 @app.post("/api/v1/history/enrich")
 def enrich_hi(background_tasks: BackgroundTasks):
