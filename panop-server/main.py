@@ -37,7 +37,8 @@ def get_env():
             "bookmark_folder": "Panop",          # name of Panop subfolder inside Outros Favoritos
             "zotero_api_key": "",                 # Zotero Web API key
             "zotero_user_id": "",                 # Zotero numeric user ID
-            "zotero_collection_key": ""           # optional: target collection key
+            "zotero_collection_key": "",          # optional: target collection key
+            "close_tabs_after_save": False        # opt-in: close tab on phone after successful save
         }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
@@ -46,7 +47,7 @@ def get_env():
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key","")]:
+        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False)]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
@@ -500,7 +501,7 @@ def run_adb_sweep():
                 title = get_pdf_title(url, tab.get("title", ""))
             else:
                 title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
-            return (url, cat, title, metadata or {})
+            return (url, cat, title, metadata or {}, tab.get("id"))
 
         # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
         WORKERS = 8
@@ -513,7 +514,7 @@ def run_adb_sweep():
                     result = future.result()
                     if result is None:
                         continue
-                    url, matched_category, title, metadata = result
+                    url, matched_category, title, metadata, tab_id = result
 
                     # Skip if another parallel worker already saved this url
                     h = load_history()
@@ -582,6 +583,15 @@ def run_adb_sweep():
                     }
                     save_history(history)
                     sweep_status["tabs_matched"] += 1
+
+                    # AUTO-CLEANUP: Close tab on phone if enabled
+                    if env.get("close_tabs_after_save") and tab_id:
+                        try:
+                            # DevTools close endpoint: POST http://localhost:9222/json/close/[id]
+                            # This is safe because it only happens AFTER the entry is successfully saved to history.
+                            requests.post(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
+                        except Exception:
+                            pass
 
                 except Exception:
                     continue
