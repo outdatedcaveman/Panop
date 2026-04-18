@@ -277,8 +277,13 @@
                 <div class="cat-row">
                     <div class="cat-col">
                         <label>Panop Bookmark Folder Name</label>
-                        <p style="color:#666; font-size:12px; margin:5px 0;">Bookmarks are saved under <strong>Outros Favoritos &rsaquo; [this folder] &rsaquo; [Category]</strong>. Your existing folders are never touched.</p>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Bookmarks are saved under <strong>Outros Favoritos &rsaquo; [this folder] &rsaquo; [Category]</strong>.</p>
                         <input type="text" id="envBookmarkFolder" placeholder="Panop">
+                    </div>
+                    <div class="cat-col">
+                        <label>Chrome Profile Folder</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Usually <strong>Default</strong>, <strong>Profile 1</strong>, etc. Check <code>chrome://version</code> if unsure.</p>
+                        <input type="text" id="envChromeProfile" placeholder="Default">
                     </div>
                 </div>
 
@@ -368,6 +373,7 @@
                 document.getElementById('envCatchUncat').value = envData.catch_uncategorized === true ? "true" : "false";
                 document.getElementById('envCloseTabs').value = envData.close_tabs_after_save === true ? "true" : "false";
                 document.getElementById('envBookmarkFolder').value = envData.bookmark_folder || 'Panop';
+                document.getElementById('envChromeProfile').value = envData.chrome_profile || 'Default';
                 document.getElementById('envZoteroKey').value = envData.zotero_api_key || '';
                 document.getElementById('envZoteroUserId').value = envData.zotero_user_id || '';
                 document.getElementById('envZoteroCollection').value = envData.zotero_collection_key || '';
@@ -570,7 +576,9 @@
                 interval_hours: parseFloat(document.getElementById('envInterval').value) || 6,
                 strict_domain_scan: document.getElementById('envStrict').value === 'true',
                 catch_uncategorized: document.getElementById('envCatchUncat').value === 'true',
+                close_tabs_after_save: document.getElementById('envCloseTabs').value === 'true',
                 bookmark_folder: document.getElementById('envBookmarkFolder').value.trim() || 'Panop',
+                chrome_profile: document.getElementById('envChromeProfile').value.trim() || 'Default',
                 zotero_api_key: document.getElementById('envZoteroKey').value.trim(),
                 zotero_user_id: document.getElementById('envZoteroUserId').value.trim(),
                 zotero_collection_key: document.getElementById('envZoteroCollection').value.trim()

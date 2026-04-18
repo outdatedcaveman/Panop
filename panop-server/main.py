@@ -38,7 +38,8 @@ def get_env():
             "zotero_api_key": "",                 # Zotero Web API key
             "zotero_user_id": "",                 # Zotero numeric user ID
             "zotero_collection_key": "",          # optional: target collection key
-            "close_tabs_after_save": False        # opt-in: close tab on phone after successful save
+            "close_tabs_after_save": False,       # opt-in: close tab on phone after successful save
+            "chrome_profile": "Default"           # Chrome profile folder name
         }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
@@ -47,7 +48,7 @@ def get_env():
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False)]:
+        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("chrome_profile", "Default")]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
@@ -279,10 +280,15 @@ def add_chrome_bookmark(url, title, category_name):
     Never touches any of the user's existing folders.
     The Panop parent folder name is configurable via System Settings > bookmark_folder.
     """
+    env = get_env()
+    profile_name = env.get("chrome_profile", "Default") or "Default"
+    
     profile = os.environ.get("USERPROFILE")
     if not profile: return
-    book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Bookmarks")
-    if not os.path.exists(book_path): return
+    book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", profile_name, "Bookmarks")
+    if not os.path.exists(book_path):
+        # Fallback to search if specific one fails? No, let's stick to config.
+        return
     try:
         with open(book_path, "r", encoding="utf-8") as f:
             data = json.load(f)
