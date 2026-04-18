@@ -1,4 +1,4 @@
-import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv
+import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from bs4 import BeautifulSoup
@@ -98,6 +98,59 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
 
+def normalize_title(t):
+    """Normalize title for fuzzy matching."""
+    if not t: return ""
+    return re.sub(r'\s+', ' ', t.lower().strip())
+
+def merge_entries(old, new):
+    """Lossless merge of two dictionary entries. Favors more detailed data."""
+    merged = old.copy()
+    # Fields to prefer from 'new' if 'old' is missing/empty
+    for field in ["abstract", "category", "cat_id", "date", "source", "author"]:
+        if not merged.get(field) and new.get(field):
+            merged[field] = new[field]
+    
+    # URL preference: prefer /abs/ over /pdf/ for Arxiv, etc.
+    if "/pdf/" in merged.get("url", "") and "/abs/" in new.get("url", ""):
+        merged["url"] = new["url"]
+    
+    # Category preference: prefer specific category over 'uncategorized'
+    if merged.get("cat_id") == "uncategorized" and new.get("cat_id") != "uncategorized":
+        merged["cat_id"] = new["cat_id"]
+        merged["category"] = new["category"]
+        
+    return merged
+
+def consolidate_history():
+    """Finds items with the same title and merges them into single records."""
+    h = load_history()
+    by_title = {}
+    to_delete = []
+    
+    for url, item in h.items():
+        title = normalize_title(item.get("title"))
+        if not title or title in {"untitled", "untitled pdf", "loading..."}:
+            continue
+            
+        if title in by_title:
+            existing_url = by_title[title]
+            # Merge!
+            h[existing_url] = merge_entries(h[existing_url], item)
+            to_delete.append(url)
+            # If the new URL looks more 'canonical' (like /abs/), swap the primary key
+            if "/abs/" in url and "/pdf/" in existing_url:
+                h[url] = h.pop(existing_url)
+                by_title[title] = url
+        else:
+            by_title[title] = url
+            
+    if to_delete:
+        for url in to_delete:
+            if url in h: del h[url]
+        save_history(h)
+    return len(to_delete)
+
 def load_config():
     if not os.path.exists(CONFIG_FILE()):
         os.makedirs(OUTPUT_DIR(), exist_ok=True)
@@ -176,7 +229,6 @@ def fetch_page_content(url):
             return metadata
     except Exception:
         pass
-    return None
     return None
 
 def get_pdf_title(url, tab_title=""):
@@ -462,8 +514,28 @@ def run_adb_sweep():
                     url, matched_category, title, metadata = result
 
                     # Skip if another parallel worker already saved this url
-                    history = load_history()
-                    if url in history:
+                    h = load_history()
+                    if url in h:
+                        continue
+                    
+                    # PROACTIVE DEDUPLICATION: Check for title collision
+                    norm = normalize_title(title)
+                    existing_url = None
+                    if norm not in {"", "untitled", "untitled pdf"}:
+                        for u, item in h.items():
+                            if normalize_title(item.get("title")) == norm:
+                                existing_url = u
+                                break
+                    
+                    if existing_url:
+                        # Merge this "new" found tab into the existing history record
+                        h[existing_url] = merge_entries(h[existing_url], {
+                            "url": url, "title": title, "category": matched_category["name"],
+                            "cat_id": matched_category["id"], "abstract": metadata.get("abstract", ""),
+                            "date": datetime.now().isoformat()
+                        })
+                        save_history(h)
+                        sweep_status["tabs_matched"] += 1
                         continue
 
                     safe_t = "".join([c for c in title if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
@@ -683,6 +755,10 @@ def run_enrich():
                 if changed:
                     save_history(h2)
                     enrich_status["updated"] += 1
+        
+        # Autonomous cleanup pass for any remaining orphans
+        m_count = consolidate_history()
+        enrich_status["updated"] += m_count
     finally:
         enrich_status["running"] = False
 
