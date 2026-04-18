@@ -33,20 +33,25 @@ def get_env():
             "interval_hours": 6,
             "catch_uncategorized": False,
             "strict_domain_scan": True,
-            "port": 8000
+            "port": 8000,
+            "bookmark_folder": "Panop",          # name of Panop subfolder inside Outros Favoritos
+            "zotero_api_key": "",                 # Zotero Web API key
+            "zotero_user_id": "",                 # Zotero numeric user ID
+            "zotero_collection_key": ""           # optional: target collection key
         }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
     try:
-        with open(ENV_FILE, "r") as f: return json.load(f)
-    except: 
-        return {
-            "root_dir": "panop_output",
-            "interval_hours": 6,
-            "catch_uncategorized": False,
-            "strict_domain_scan": True,
-            "port": 8000
-        }
+        with open(ENV_FILE, "r") as f:
+            env = json.load(f)
+        # Back-fill new keys if missing (upgrade path)
+        changed = False
+        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key","")]:
+            if k not in env: env[k] = v; changed = True
+        if changed: save_env(env)
+        return env
+    except:
+        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"Panop","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":""}
 
 def save_env(env):
     with open(ENV_FILE, "w") as f: json.dump(env, f, indent=4)
@@ -205,8 +210,11 @@ def get_pdf_title(url, tab_title=""):
     return "Untitled PDF"
 
 def add_chrome_bookmark(url, title, category_name):
-    """Saves a bookmark into the user's existing Chrome 'Outro Favoritos' (Other Bookmarks),
-    placing it directly inside a folder matching the category name. Creates the folder if missing."""
+    """Saves a bookmark into a dedicated Panop subfolder inside 'Outros Favoritos'.
+    Structure: Outros Favoritos > [bookmark_folder] > [category_name]
+    Never touches any of the user's existing folders.
+    The Panop parent folder name is configurable via System Settings > bookmark_folder.
+    """
     profile = os.environ.get("USERPROFILE")
     if not profile: return
     book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Bookmarks")
@@ -214,30 +222,76 @@ def add_chrome_bookmark(url, title, category_name):
     try:
         with open(book_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
-        # 'other' IS 'Outro Favoritos' in Portuguese Chrome
+
+        # Chrome internal key for "Outros Favoritos" is always "other"
         other = data.get("roots", {}).get("other", {})
         if "children" not in other:
             other["children"] = []
-        
-        # Look for an existing folder with this category name directly inside Outro Favoritos
+
+        env = get_env()
+        panop_folder_name = env.get("bookmark_folder", "Panop") or "Panop"
+
+        # Level 1: find or create the Panop parent folder
+        panop_folder = next(
+            (c for c in other["children"] if c.get("type") == "folder" and c.get("name", "") == panop_folder_name),
+            None
+        )
+        if not panop_folder:
+            stamp = str(int(time.time() * 1000000))
+            panop_folder = {"children": [], "date_added": stamp, "date_last_used": "0",
+                            "guid": "", "name": panop_folder_name, "type": "folder"}
+            other["children"].append(panop_folder)
+
+        # Level 2: find or create the category subfolder inside Panop
         cat_folder = next(
-            (c for c in other["children"] if c.get("type") == "folder" and c.get("name", "").lower() == category_name.lower()),
+            (c for c in panop_folder["children"] if c.get("type") == "folder" and c.get("name", "").lower() == category_name.lower()),
             None
         )
         if not cat_folder:
             stamp = str(int(time.time() * 1000000))
-            cat_folder = {"children": [], "date_added": stamp, "date_last_used": "0", "guid": "", "name": category_name, "type": "folder"}
-            other["children"].append(cat_folder)
-        
-        # Add bookmark only if not already present
+            cat_folder = {"children": [], "date_added": stamp, "date_last_used": "0",
+                          "guid": "", "name": category_name, "type": "folder"}
+            panop_folder["children"].append(cat_folder)
+
+        # Add bookmark only if URL not already present in this folder
         if not any(c.get("url") == url for c in cat_folder.get("children", [])):
             stamp = str(int(time.time() * 1000000))
-            cat_folder["children"].append({"date_added": stamp, "date_last_used": "0", "guid": "", "name": title, "type": "url", "url": url})
+            cat_folder["children"].append({
+                "date_added": stamp, "date_last_used": "0", "guid": "",
+                "name": title, "type": "url", "url": url
+            })
             with open(book_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+def send_to_zotero(url, title, abstract, category_name):
+    """Posts a new item to the Zotero Web API. Requires API key + user ID in env.
+    Item type is 'webpage'. Returns True on success.
+    """
+    env = get_env()
+    api_key = env.get("zotero_api_key", "").strip()
+    user_id = env.get("zotero_user_id", "").strip()
+    if not api_key or not user_id:
+        return False
+    try:
+        item = {
+            "itemType": "webpage",
+            "title": title,
+            "url": url,
+            "abstractNote": abstract or "",
+            "websiteTitle": "",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "tags": [{"tag": category_name}],
+            "collections": [env["zotero_collection_key"]] if env.get("zotero_collection_key") else []
+        }
+        headers = {"Zotero-API-Key": api_key, "Content-Type": "application/json"}
+        endpoint = f"https://api.zotero.org/users/{user_id}/items"
+        resp = requests.post(endpoint, json=[item], headers=headers, timeout=10)
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
 
 def run_adb_sweep():
     global sweep_status
@@ -411,15 +465,34 @@ def run_adb_sweep():
                     target_dir = d if os.path.isabs(d) else os.path.join(OUTPUT_DIR(), d)
                     os.makedirs(target_dir, exist_ok=True)
 
-                    with open(os.path.join(target_dir, f"{safe_t.replace(' ', '_')}.md"), "w", encoding="utf-8") as f:
-                        f.write(f"# {title}\n**URL:** {url}\n**Category:** {matched_category['name']}\n")
-                        if metadata.get("abstract"): f.write(f"\n## Abstract\n{metadata['abstract']}\n")
+                    # Save rich .json entry (replaces old .md)
+                    entry_data = {
+                        "url": url,
+                        "canonical_url": metadata.get("canonical_url", url),
+                        "title": title,
+                        "category": matched_category["name"],
+                        "category_id": matched_category["id"],
+                        "abstract": metadata.get("abstract", ""),
+                        "date_saved": datetime.now().isoformat(),
+                        "source": "panop-android"
+                    }
+                    fname = safe_t.replace(' ', '_')[:80]  # cap filename length
+                    with open(os.path.join(target_dir, f"{fname}.json"), "w", encoding="utf-8") as f:
+                        json.dump(entry_data, f, indent=2, ensure_ascii=False)
 
-                    history[url] = {"title": title, "category": matched_category["name"],
-                                    "cat_id": matched_category["id"],
-                                    "date": datetime.now().isoformat(), "ai_learned": False}
+                    history[url] = {
+                        "title": title,
+                        "category": matched_category["name"],
+                        "cat_id": matched_category["id"],
+                        "date": datetime.now().isoformat(),
+                        "abstract": metadata.get("abstract", ""),
+                        "canonical_url": metadata.get("canonical_url", url),
+                        "ai_learned": False,
+                        "file": os.path.join(target_dir, f"{fname}.json")
+                    }
                     save_history(history)
                     add_chrome_bookmark(url, title, matched_category["name"])
+                    send_to_zotero(url, title, metadata.get("abstract", ""), matched_category["name"])
                     sweep_status["tabs_matched"] += 1
 
                 except Exception:
@@ -501,7 +574,13 @@ class DeleteItem(BaseModel): urls: List[str]
 def del_hi(item: DeleteItem):
     h = load_history()
     for u in item.urls:
-        if u in h: del h[u]
+        if u in h:
+            # Also delete the associated file from disk if it exists
+            file_path = h[u].get("file", "")
+            if file_path and os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+            del h[u]
     save_history(h)
     return {"status": "ok"}
 
