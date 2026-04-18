@@ -61,6 +61,13 @@
         .url-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3b82f6; font-size:11px; }
         .title-cell { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .results-count { font-size:12px; color:#666; margin-bottom:6px; }
+        
+        .sync-status { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+        .sync-icon { font-size: 10px; padding: 2px 5px; border-radius: 3px; font-weight: bold; background: #1a1a1a; color: #444; border: 1px solid #333; cursor: pointer; transition: 0.2s; }
+        .sync-icon:hover { filter: brightness(1.2); }
+        .sync-icon.active { color: #fff; border-color: #444; }
+        .sync-icon.zotero.active { background: #3b82f6; border-color: #60a5fa; }
+        .sync-icon.bookmark.active { background: #064e3b; border-color: #10b981; color: #6ee7b7; }
         .filter-bar button.active {
             background: #f59e0b !important;
             color: #1a0a0a !important;
@@ -153,7 +160,22 @@
                 <button class="secondary" onclick="clearLedgerFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
             </div>
             <div class="results-count" id="ldrCount"></div>
-            <div style="height:calc(100vh - 320px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
+            <div class="card" style="margin-bottom:15px; background: rgba(59, 130, 246, 0.05); border-color: rgba(59, 130, 246, 0.2);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:15px;">
+                        <div style="font-size:13px; color:#60a5fa; font-weight:600;">☁️ CLOUD & QUALITY TOOLS</div>
+                        <div id="ldrStatus" style="font-size:11px; color:#475569;">Ready</div>
+                    </div>
+                    <div style="display:flex; gap:10px;">
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="testZotero('ldrStatus')" title="Verify Zotero connectivity">✦ Check Connection</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerMerge()" title="Autonomously merge multiple entries with the same title">⚡ Merge Duplicates</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerBulkSync('zotero')" title="Push all items missing the [Z] icon to Zotero">Z Resync All</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerBulkSync('bookmark')" title="Add all items missing the [B] icon to Chrome Bookmarks">B Resync All</button>
+                    </div>
+                </div>
+            </div>
+
+            <div style="height:calc(100vh - 380px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
                 <table id="ledgerTable">
                     <thead><tr>
                         <th style="width:22px;"><input type="checkbox" onchange="selectAllHistory(this.checked)"></th>
@@ -161,6 +183,7 @@
                         <th style="width:140px;">Category</th>
                         <th>Document Title</th>
                         <th>Source URL</th>
+                        <th style="width:40px;">Sync</th>
                         <th style="width:60px;">Act</th>
                     </tr></thead>
                     <tbody id="ledgerBody"></tbody>
@@ -226,6 +249,17 @@
                     </div>
                 </div>
 
+                <div class="cat-row" style="margin-top:20px;">
+                    <div class="cat-col">
+                        <label>Remote Tab Cleanup (ADB)</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Automatically close browser tabs on your phone ONLY after they are successfully archived in Panop.</p>
+                        <select id="envCloseTabs">
+                            <option value="false">KEEP OPEN - Maintain tabs on phone</option>
+                            <option value="true">CLOSE - Cleanup phone after save (Safe)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <h3 style="margin-top:30px;">Database &amp; Storage</h3>
                 <div class="cat-row">
                     <div class="cat-col">
@@ -249,7 +283,10 @@
                 </div>
 
                 <h3 style="margin-top:30px;">Zotero Integration</h3>
-                <p style="color:#666; font-size:12px;">Every saved entry is automatically pushed to your Zotero library. Get your API key at <a href="#" onclick="openUrl('https://www.zotero.org/settings/keys')" style="color:#3b82f6;">zotero.org/settings/keys</a> and your User ID from your profile page.</p>
+                <p style="color:#666; font-size:12px;">Every saved entry is automatically pushed to your Zotero library. 
+                    <br>• <strong>API Key:</strong> Get it at <a href="#" onclick="openUrl('https://www.zotero.org/settings/keys')" style="color:#3b82f6;">zotero.org/settings/keys</a>
+                    <br>• <strong>User ID:</strong> On that <strong>same page</strong>, look at the top left where it says <em>"Your userID for use in API calls is <strong>######</strong>"</em>.
+                </p>
                 <div class="cat-row">
                     <div class="cat-col">
                         <label>Zotero API Key</label>
@@ -264,7 +301,7 @@
                         <input type="text" id="envZoteroCollection" placeholder="e.g. ABC12DEF — leave blank for top-level">
                     </div>
                 </div>
-                <button class="secondary" style="margin-top:8px;" onclick="testZotero()">&#x2726; Test Zotero Connection</button>
+                <button class="secondary" style="margin-top:8px;" onclick="testZotero()">✦ Test Zotero Connection</button>
                 <span id="zoteroTestResult" style="margin-left:12px; font-size:13px;"></span>
 
                 <button style="margin-top:30px;" onclick="saveAllSettings()">Save All Settings</button>
@@ -329,6 +366,7 @@
                 document.getElementById('envInterval').value = envData.interval_hours || 6;
                 document.getElementById('envStrict').value = envData.strict_domain_scan !== false ? "true" : "false";
                 document.getElementById('envCatchUncat').value = envData.catch_uncategorized === true ? "true" : "false";
+                document.getElementById('envCloseTabs').value = envData.close_tabs_after_save === true ? "true" : "false";
                 document.getElementById('envBookmarkFolder').value = envData.bookmark_folder || 'Panop';
                 document.getElementById('envZoteroKey').value = envData.zotero_api_key || '';
                 document.getElementById('envZoteroUserId').value = envData.zotero_user_id || '';
@@ -503,6 +541,28 @@
             rebuildCatFilter();
         }
 
+        async function triggerMerge() {
+            let res = await fetch('http://127.0.0.1:8000/api/v1/history/merge', {method:'POST'});
+            let data = await res.json();
+            alert(`Autonomous merge complete! Combined ${data.merged} duplicate groups.`);
+            await loadHistory();
+        }
+
+        async function triggerBulkSync(type) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/history/sync?type=${type}`, {method:'POST'});
+            alert(`Background ${type} sync started. Only unsynced items will be processed.`);
+        }
+
+        async function manualSyncSingle(url, type) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/history/sync_single?url=${encodeURIComponent(url)}&type=${type}`, {method:'POST'});
+            let data = await res.json();
+            if (data.status === 'ok') {
+                await loadHistory();
+            } else {
+                alert("Sync failed. Check your Zotero credentials in System Settings.");
+            }
+        }
+
         async function saveAllSettings() {
             // Save env (interval, flags, paths, Zotero, bookmark folder)
             let env = Object.assign({}, envData || {}, {
@@ -524,17 +584,30 @@
             alert('✅ All settings saved.');
         }
 
-        async function testZotero() {
-            let el = document.getElementById('zoteroTestResult');
+        async function testZotero(targetId = 'zoteroTestResult') {
+            let el = document.getElementById(targetId);
             el.style.color = '#aaa'; el.textContent = 'Testing...';
             let key = document.getElementById('envZoteroKey').value.trim();
             let uid = document.getElementById('envZoteroUserId').value.trim();
-            if (!key || !uid) { el.style.color='#ef4444'; el.textContent = '✕ Enter API key and User ID first.'; return; }
+            if (!key || !uid) { 
+                el.style.color='#ef4444'; 
+                el.textContent = '✕ Missing API key/User ID'; 
+                return; 
+            }
             try {
                 let r = await fetch(`https://api.zotero.org/users/${uid}/items?limit=1`, { headers: {'Zotero-API-Key': key} });
-                if (r.ok) { el.style.color='#10b981'; el.textContent = `✓ Connected — library accessible (${r.headers.get('Total-Results') || '?'} items).`; }
-                else { el.style.color='#ef4444'; el.textContent = `✕ Error ${r.status}: check your key and user ID.`; }
-            } catch(e) { el.style.color='#ef4444'; el.textContent = '✕ Network error — check internet connection.'; }
+                if (r.ok) { 
+                    el.style.color='#10b981'; 
+                    el.textContent = `✓ Connected (${r.headers.get('Total-Results') || '?'} items)`; 
+                }
+                else { 
+                    el.style.color='#ef4444'; 
+                    el.textContent = `✕ Auth Error ${r.status}`; 
+                }
+            } catch(e) { 
+                el.style.color='#ef4444'; 
+                el.textContent = '✕ Network Error'; 
+            }
         }
 
         /* ──────────────────────────────────────────────────────
@@ -626,12 +699,20 @@
                 return `<tr>
                     <td><input type="checkbox" style="width:auto;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="dash_chk_all"></td>
                     <td style="white-space:nowrap; font-size:12px; color:#666;"><input type="text" id="ddt_${i}" value="${r.date}" class="table-input" style="width:95px;"></td>
-                    <td><span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span></td>
+                    <td>
+                        <span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span>
+                    </td>
                     <td class="title-cell">
                         <input type="text" id="dti_${i}" value="${safeTitle}" title="${safeTitle}" class="table-input">
                         ${hasAbstract ? `<span style="margin-left:4px; font-size:9px; color:#475569; cursor:pointer;" onclick="let e=document.getElementById('abs_${i}'); e.style.display=e.style.display==='none'?'table-row':'none'" title="Toggle abstract">▼ abstract</span>` : ''}
                     </td>
                     <td class="url-cell"><a href="#" title="${safeUrl}" style="color:#3b82f6; text-decoration:none;" onclick="event.preventDefault(); openUrl('${safeUrl}')">${r.url}</a></td>
+                    <td>
+                        <div class="sync-status">
+                            <span class="sync-icon zotero ${r.z_synced?'active':''}" title="${r.z_synced?'Synced to Zotero (Click to retry)':'Not synced to Zotero (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'zotero')">Z</span>
+                            <span class="sync-icon bookmark ${r.b_synced?'active':''}" title="${r.b_synced?'Synced to Chrome Bookmarks (Click to retry)':'Not synced (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'bookmark')">B</span>
+                        </div>
+                    </td>
                     <td style="white-space:nowrap;">
                         <button style="padding:3px 7px; font-size:10px; background:#1e293b;" title="Save edits" onclick="inlineSaveDash(decodeURIComponent('${enc}'), ${i}, '${r.catId}')">💾</button>
                         <button style="padding:3px 7px; font-size:10px; background:#3b1c1c;" title="Delete" onclick="deleteSingle(decodeURIComponent('${enc}'))">✕</button>
@@ -681,7 +762,9 @@
                     category: item.category || 'Uncategorized',
                     catId: item.cat_id || 'uncategorized',
                     date: item.date ? item.date.split('T')[0] : '',
-                    abstract: item.abstract || ''
+                    abstract: item.abstract || '',
+                    z_synced: !!item.z_synced,
+                    b_synced: !!item.b_synced
                 }));
 
                 rebuildCatFilter();
@@ -754,6 +837,12 @@
                     </select></td>
                     <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input"></td>
                     <td><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input"></td>
+                    <td>
+                        <div class="sync-status">
+                            <span class="sync-icon zotero ${r.z_synced?'active':''}" title="${r.z_synced?'Synced to Zotero (Click to retry)':'Not synced to Zotero (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'zotero')">Z</span>
+                            <span class="sync-icon bookmark ${r.b_synced?'active':''}" title="${r.b_synced?'Synced to Chrome Bookmarks (Click to retry)':'Not synced (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'bookmark')">B</span>
+                        </div>
+                    </td>
                     <td>
                         <div style="display:flex; gap:5px;">
                             ${isDupe ? '<span title="Duplicate entry detected" style="cursor:help; font-size:14px;">⚠️</span>' : ''}
@@ -856,6 +945,7 @@
             envData.interval_hours = parseFloat(document.getElementById('envInterval').value) || 6;
             envData.strict_domain_scan = document.getElementById('envStrict').value === "true";
             envData.catch_uncategorized = document.getElementById('envCatchUncat').value === "true";
+            envData.close_tabs_after_save = document.getElementById('envCloseTabs').value === "true";
             await fetch('http://127.0.0.1:8000/api/v1/env', { method: 'POST', body: JSON.stringify(envData), headers:{'Content-Type':'application/json'} });
             
             configData.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s=>s.trim()).filter(s=>s);
