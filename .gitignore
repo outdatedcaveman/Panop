@@ -1,0 +1,18 @@
+panop_output/
+panop-server/venv/
+panop-server/build/
+panop-server/dist/
+panop-server/__pycache__/
+panop-gui/node_modules/
+panop-gui/dist/
+panop-gui/out/
+Panop-Desktop/
+panop-gui/panop-server.exe
+*.ico
+.env
+tabs.json
+panop-server/panop_env.json
+
+# Git backups
+.git.bak/
+

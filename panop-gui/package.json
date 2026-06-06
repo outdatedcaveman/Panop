@@ -1,0 +1,17 @@
+{
+  "name": "panop-gui",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "electron": "^41.2.0",
+    "electron-packager": "^17.1.2"
+  }
+}

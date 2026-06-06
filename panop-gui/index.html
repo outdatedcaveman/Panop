@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Panop Control Center</title>
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #000000; color: #f1f5f9; display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 250px; background: #0a0a0a; border-right: 1px solid #222; padding: 20px 0; display: flex; flex-direction: column; }
+        .brand { color: #e84a2e; font-size: 24px; font-weight: 800; letter-spacing: 2px; margin-bottom: 40px; display: flex; flex-direction: row; align-items:center; justify-content:center; gap:10px; }
+        .brand img { width: 28px; height: 28px; }
+        .nav-item { padding: 15px 25px; color: #94a3b8; cursor: pointer; transition: 0.3s; font-weight: 500; border-left: 3px solid transparent; }
+        .nav-item:hover { background: #1a1a1a; color: #fff; }
+        .nav-item.active { background: #111; color: #ef4444; border-left: 3px solid #ef4444; }
+        
+        .main-content { flex: 1; overflow-y: auto; padding: 40px; background: #111111; position:relative;}
+        .panel { display: none; animation: fadeIn 0.3s; }
+        .panel.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        h1 { color: #fff; border-bottom: 2px solid #222; padding-bottom: 10px; font-size: 28px; font-weight: 300;}
+        .card { background: #0a0a0a; border: 1px solid #222; border-left: 4px solid #ef4444; border-radius: 6px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+        .col-card { background: #0a0a0a; border: 1px solid #222; border-top: 4px solid #ef4444; border-radius: 6px; padding: 15px; flex: 1; min-width: 380px; height: calc(100vh - 260px); overflow-y: auto;}
+        
+        button { background: #ef4444; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:hover { background: #b91c1c; }
+        button.secondary { background: #222; color: #ccc;}
+        button.secondary:hover { background: #333; color: white;}
+
+        input, textarea, select { width: 100%; box-sizing: border-box; background: #111; border: 1px solid #333; color: white; padding: 10px; border-radius: 4px; margin-top: 5px; font-family: monospace; }
+        input:focus, textarea:focus, select:focus { outline: none; border-color: #ef4444; }
+        label { font-size: 13px; color: #94a3b8; font-weight: 600;}
+        
+        .cat-row { display: flex; gap: 10px; margin-bottom: 15px; align-items: flex-start; }
+        .cat-col { flex: 1; }
+
+        .hist-item { background: #1a1a1a; padding: 10px; border-radius: 4px; margin-bottom: 10px; border-left: 2px solid #333; }
+        .hist-item.ai { border-left-color: #a855f7; background: #1f142e; }
+        .hist-title { font-size: 13px; font-weight: 600; margin-bottom: 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+        .hist-meta { font-size: 11px; color: #666; display:flex; justify-content:space-between;}
+        
+        #editActionBar { position: fixed; bottom: 0; left: 250px; right: 0; background: #111; border-top: 1px solid #333; padding: 15px 40px; display: none; align-items: center; gap: 15px; box-shadow: 0 -5px 15px rgba(0,0,0,0.5); z-index:100; }
+        
+        /* ── Dashboard unified table ───────────────────────────────── */
+        .filter-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+        .filter-bar input, .filter-bar select { margin-top:0; padding:7px 10px; font-size:12px; width:auto; flex:1; min-width:120px; }
+        .filter-bar .fbar-search { flex:2; min-width:200px; }
+        .sort-th { cursor:pointer; user-select:none; white-space:nowrap; }
+        .sort-th:hover { color:#fff; }
+        .sort-th .arrow { margin-left:4px; opacity:0.4; font-size:10px; }
+        .sort-th.asc .arrow::after { content:'▲'; opacity:1; }
+        .sort-th.desc .arrow::after { content:'▼'; opacity:1; }
+        .cat-badge { display:inline-block; padding:2px 7px; border-radius:3px; font-size:11px; font-weight:600; background:#1e293b; color:#94a3b8; }
+        .cat-badge.articles { background:#172554; color:#60a5fa; }
+        .cat-badge.books { background:#14532d; color:#4ade80; }
+        .cat-badge.uncategorized { background:#431407; color:#fb923c; }
+        /* Shared editable table */
+        table { width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed; }
+        th, td { padding:9px 12px; text-align:left; border-bottom:1px solid #1e1e1e; vertical-align:middle; overflow:hidden; }
+        th { background:#0d0d0d; color:#ef4444; font-weight:600; position:sticky; top:0; z-index:2; }
+        tr:hover td { background:#111; }
+        .table-input { background:transparent; border:1px solid transparent; color:#ccc; padding:3px 5px; width:100%; box-sizing:border-box; border-radius:3px; font-size:12px; font-family:inherit; }
+        .table-input:hover, .table-input:focus { background:#1a1a1a; border-color:#444; color:#fff; outline:none; }
+        .url-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3b82f6; font-size:11px; }
+        .title-cell { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .results-count { font-size:12px; color:#666; margin-bottom:6px; }
+        
+        .sync-status { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+        .sync-icon { font-size: 10px; padding: 2px 5px; border-radius: 3px; font-weight: bold; background: #1a1a1a; color: #444; border: 1px solid #333; cursor: pointer; transition: 0.2s; }
+        .sync-icon:hover { filter: brightness(1.2); }
+        .sync-icon.active { color: #fff; border-color: #444; }
+        .sync-icon.zotero.active { background: #3b82f6; border-color: #60a5fa; }
+        .sync-icon.bookmark.active { background: #064e3b; border-color: #10b981; color: #6ee7b7; }
+        .filter-bar button.active {
+            background: #f59e0b !important;
+            color: #1a0a0a !important;
+            border-color: #f59e0b !important;
+        }
+        #dupesWrap { display:none; cursor:pointer; padding:2px 8px; border-radius:4px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); }
+        #dupesWrap:hover { background: rgba(245, 158, 11, 0.2); }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="brand"><img src="panop.ico" alt=""> PANOP</div>
+        <div class="nav-item active" onclick="switchPanel('dash')">Live Dashboard</div>
+        <div class="nav-item" onclick="switchPanel('ledger')">Historical Ledger</div>
+        <div class="nav-item" onclick="switchPanel('categories')">Categories</div>
+        <div class="nav-item" onclick="switchPanel('export')">File Exports</div>
+        <div class="nav-item" onclick="switchPanel('network')">System Settings</div>
+    </div>
+    
+    <div class="main-content">
+        <!-- Dashboard -->
+        <div id="dash" class="panel active">
+            <div class="card" style="display:flex; justify-content:space-between; align-items:flex-start; gap:20px;">
+                <div style="flex:1;">
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+                        <h3 style="margin:0;">Server: <span id="serverBadge" style="color:#ef4444;">Connecting...</span></h3>
+                        <span id="sweepRunning" style="display:none; background:#f59e0b; color:#000; padding:3px 8px; border-radius:3px; font-size:11px; font-weight:bold;">⟳ SWEEP RUNNING</span>
+                    </div>
+                    <div id="sweepStatusPanel" style="font-size:12px; color:#666; display:flex; gap:20px; flex-wrap:wrap;">
+                        <span>Device: <span id="stDevice" style="color:#aaa;">—</span></span>
+                        <span>Tabs seen: <span id="stSeen" style="color:#aaa;">—</span></span>
+                        <span>New (not in history): <span id="stNew" style="color:#aaa;">—</span></span>
+                        <span>Matched: <span id="stMatched" style="color:#10b981; font-weight:bold;">—</span></span>
+                        <span id="dupesWrap" onclick="switchPanel('ledger'); document.getElementById('ldrDupesToggle').classList.add('active'); applyLedgerFilters();" title="Click to view all potential duplicates in Ledger">
+                            <span style="color:#f59e0b; cursor:pointer;">⚠ Duplicates:</span> <span id="stDupes" style="color:#fff; font-weight:bold; cursor:pointer;">0 group(s) — click to view</span>
+                        </span>
+                    </div>
+                    <div id="sweepError" style="display:none; margin-top:8px; padding:8px 12px; background:#1a0505; border:1px solid #5a1a1a; border-radius:4px; color:#ef4444; font-size:12px;"></div>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">
+                    <button id="phoneAwakeBtnDash" class="secondary" style="font-size:11px; padding:4px 10px; white-space:nowrap;" onclick="togglePhoneAwake()" title="Toggle phone screen timeout. Works over USB and wireless ADB.">📵 Phone: ?</button>
+                    <button id="phoneReconnectBtnDash" class="secondary" style="font-size:11px; padding:4px 10px; white-space:nowrap;" onclick="reconnectPhone()" title="Try to reconnect ADB to the phone using the wireless IPs in Settings.">🔌 Reconnect Phone</button>
+                    <button id="phonePairBtnDash" class="secondary" style="font-size:11px; padding:4px 10px; white-space:nowrap;" onclick="pairPhone()" title="First-time pairing for Android 11+ Wireless Debugging. Needed only after 'Revoke authorizations' or first setup.">🤝 Pair Phone</button>
+                    <button onclick="triggerEnrich()" id="enrichBtn" class="secondary" style="white-space:nowrap;">✦ Enrich Titles</button>
+                    <button onclick="triggerSweep()" id="sweepBtn">FETCH NOW FROM ANDROID</button>
+                </div>
+            </div>
+            <!-- Filter bar -->
+            <div class="filter-bar">
+                <input class="fbar-search" type="text" id="dashSearch" placeholder="🔍  Search title or URL..." oninput="applyFilters()">
+                <select id="dashCatFilter" onchange="applyFilters()" style="min-width:140px;">
+                    <option value="">All Categories</option>
+                </select>
+                <input type="date" id="dashDateFrom" onchange="applyFilters()" title="From date">
+                <input type="date" id="dashDateTo" onchange="applyFilters()" title="To date">
+                <button class="secondary" onclick="clearFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
+            </div>
+            <div class="results-count" id="dashCount"></div>
+            <!-- Unified table -->
+            <div style="height:calc(100vh - 320px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
+                <table id="dashTable">
+                    <thead>
+                        <tr>
+                            <th style="width:22px;"><input type="checkbox" id="dashChkAll" onchange="selectAllDash(this.checked)"></th>
+                            <th class="sort-th" onclick="sortTable('date')" data-col="date">Date<span class="arrow"></span></th>
+                            <th class="sort-th" onclick="sortTable('category')" data-col="category">Category<span class="arrow"></span></th>
+                            <th class="sort-th" onclick="sortTable('title')" data-col="title">Title<span class="arrow"></span></th>
+                            <th>URL</th>
+                            <th style="width:46px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Master Ledger Window -->
+        <div id="ledger" class="panel">
+            <!-- Ledger filter bar -->
+            <div class="filter-bar">
+                <input class="fbar-search" type="text" id="ldrSearch" placeholder="🔍  Search title or URL..." oninput="applyLedgerFilters()">
+                <select id="ldrCatFilter" onchange="applyLedgerFilters()" style="min-width:140px;">
+                    <option value="">All Categories</option>
+                </select>
+                <input type="date" id="ldrDateFrom" onchange="applyLedgerFilters()" title="From date">
+                <input type="date" id="ldrDateTo" onchange="applyLedgerFilters()" title="To date">
+                <button id="ldrDupesToggle" class="secondary" style="font-size:12px; padding:7px 12px; display:flex; align-items:center; gap:6px; white-space:nowrap;" onclick="toggleDupesFilter()">
+                    ⚠️ Show Only Duplicates
+                </button>
+                <button class="secondary" onclick="clearLedgerFilters()" style="white-space:nowrap; padding:7px 12px;">✕ Clear</button>
+            </div>
+            <div class="results-count" id="ldrCount"></div>
+            <div class="card" style="margin-bottom:15px; background: rgba(59, 130, 246, 0.05); border-color: rgba(59, 130, 246, 0.2);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:15px;">
+                        <div style="font-size:13px; color:#60a5fa; font-weight:600;">☁️ CLOUD & QUALITY TOOLS</div>
+                        <div id="ldrStatus" style="font-size:11px; color:#475569;">Ready</div>
+                        <button id="stopBulkBtn" class="secondary" style="display:none; font-size:11px; padding:4px 10px; background:#3b1010; color:#fca5a5; border:1px solid #5a1a1a;" onclick="cancelBulkSync()">⏹ Stop Sync</button>
+                        <button id="stopEnrichBtn" class="secondary" style="display:none; font-size:11px; padding:4px 10px; background:#3b1010; color:#fca5a5; border:1px solid #5a1a1a;" onclick="cancelEnrich()">⏹ Stop Enrich</button>
+                    </div>
+                    <div style="display:flex; gap:10px;">
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="testZotero('ldrStatus')" title="Verify Zotero connectivity">✦ Check Connection</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerMerge()" title="Autonomously merge multiple entries with the same title">⚡ Merge Duplicates</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerBulkSync('zotero')" title="Push all items missing the [Z] icon to Zotero">Z Resync All</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="triggerBulkSync('bookmark')" title="Add all items missing the [B] icon to Chrome Bookmarks">B Resync All</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px; background:#064e3b; border-color:#10b981; display:none;" id="flushBtn" onclick="flushBookmarks()" title="Legacy fallback — only needed if the Chrome extension isn't installed. Writes queued bookmarks to Chrome (must be closed first).">⬇ Flush Bookmarks <span id="flushCount" style="color:#fbbf24;"></span></button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="closeSyncedTabs()" title="Close Android Chrome tabs whose URL already has both [Z] and [B] green.">📱 Close Synced Tabs</button>
+                        <button class="secondary" style="font-size:11px; padding:4px 10px;" onclick="inspectTabs()" title="Classify every currently-open Android tab: saved / match / no_match / body_required / discarded / chrome_internal.">🔍 Inspect Tabs</button>
+                        <button id="drainBtn" class="secondary" style="font-size:11px; padding:4px 10px; background:#3b2860; border-color:#a855f7; color:#e9d5ff;" onclick="startDrain()" title="Two-phase drain: visible URLs first (fast), then wake suspended tabs in batches. Pausable + resumable.">⚡ Drain All Tabs</button>
+                        <button id="phoneAwakeBtn" class="secondary" style="font-size:11px; padding:4px 10px;" onclick="togglePhoneAwake()" title="Toggle phone screen timeout. Works over USB and wireless ADB.">📵 Phone: ?</button>
+                        <button id="phoneReconnectBtn" class="secondary" style="font-size:11px; padding:4px 10px;" onclick="reconnectPhone()" title="Try to reconnect ADB to the phone using the wireless IPs in Settings.">🔌 Reconnect Phone</button>
+                        <button id="phonePairBtn" class="secondary" style="font-size:11px; padding:4px 10px;" onclick="pairPhone()" title="First-time pairing for Android 11+ Wireless Debugging. Needed only after 'Revoke authorizations' or first setup.">🤝 Pair Phone</button>
+                    </div>
+                </div>
+                <div id="bookmarkBanner" style="display:none; margin-top:8px; padding:8px 12px; background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.4); border-radius:4px; font-size:12px; color:#fde68a;">
+                    ⚠ <span id="bookmarkBannerMsg"></span>
+                </div>
+            </div>
+
+            <div style="height:calc(100vh - 380px); overflow-y:auto; border:1px solid #1e1e1e; border-radius:6px;">
+                <table id="ledgerTable">
+                    <thead><tr>
+                        <th style="width:30px;"><input type="checkbox" onchange="selectAllHistory(this.checked)"></th>
+                        <th style="width:110px;">Date</th>
+                        <th style="width:130px;">Category</th>
+                        <th>Document Title</th>
+                        <th style="width:260px;">Source URL</th>
+                        <th style="width:50px;" title="Open on Android Chrome (last fetch)">📱</th>
+                        <th style="width:60px;">Sync</th>
+                        <th style="width:80px;">Act</th>
+                    </tr></thead>
+                    <tbody id="ledgerBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Action Bar (Shared) -->
+        <div id="editActionBar">
+            <span style="color:#fff; font-weight:bold;"><span id="selCount">0</span> Items Selected</span>
+            <button class="secondary" onclick="deleteSelected()">🗑️ Delete from DB</button>
+            <div style="width:1px; height:20px; background:#444;"></div>
+            <label style="margin:0; color:#fff;">Move To:</label>
+            <select id="moveSelect" style="background:#222; color:#fff; border:1px solid #444; padding:8px; border-radius:4px;"></select>
+            <button onclick="moveSelected()">Migrate</button>
+            <div style="flex:1;"></div>
+            <button class="secondary" onclick="clearSelection()">Cancel</button>
+        </div>
+
+        <!-- Categories -->
+        <div id="categories" class="panel">
+            <h1>Categories</h1>
+            <p style="color:#aaa; font-size: 14px;">Domain triggers check if the string exists anywhere in the URL. Body keywords are checked against the page text. Use the mode selector to set whether ALL or just ANY keyword must match.</p>
+            <div id="categoriesWrapper"></div>
+            <button onclick="addCategory()" style="margin-bottom:20px;" class="secondary">+ Add Logical Category</button>
+            <button onclick="saveCategories()" style="background:#10b981; float:right;">Save Pipeline Config</button>
+        </div>
+
+        <!-- Network / Global Config -->
+        <div id="network" class="panel">
+            <h1>System Settings</h1>
+
+            <div class="card">
+                <h3>Automation Timers</h3>
+                <div class="cat-row">
+                    <div class="cat-col">
+                        <label>Background ADB Polling Interval (Hours)</label>
+                        <input type="number" step="0.5" id="envInterval">
+                    </div>
+                </div>
+
+                <h3 style="margin-top:30px;">Algorithmic Fetch Constraints</h3>
+                <div class="cat-row" style="align-items:stretch;">
+                    <div class="cat-col" style="display:flex; flex-direction:column;">
+                        <div style="flex:1;">
+                            <label>Strict Domain Pre-Filter (Performance Mode)</label>
+                            <p style="color:#666; font-size:12px; margin:5px 0;">If YES, Panop will ONLY download/scan body text if the domain matches first. Prevents freezing on 2000+ tabs.</p>
+                        </div>
+                        <select id="envStrict">
+                            <option value="true">YES - Max Performance &amp; Stability</option>
+                            <option value="false">NO - Brute Force download ALL body text</option>
+                        </select>
+                    </div>
+                    <div class="cat-col" style="display:flex; flex-direction:column;">
+                        <div style="flex:1;">
+                            <label>Catch Uncategorized Drops</label>
+                            <p style="color:#666; font-size:12px; margin:5px 0;">If YES, tabs that fail rules are saved as 'Uncategorized'. If NO, failures are discarded silently.</p>
+                        </div>
+                        <select id="envCatchUncat">
+                            <option value="false">NO - Discard Non-Matches</option>
+                            <option value="true">YES - Keep Everything Uncategorized</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="cat-row" style="margin-top:20px;">
+                    <div class="cat-col">
+                        <label>Remote Tab Cleanup (ADB)</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Automatically close browser tabs on your phone ONLY after they are successfully archived in Panop.</p>
+                        <select id="envCloseTabs">
+                            <option value="false">KEEP OPEN - Maintain tabs on phone</option>
+                            <option value="true">CLOSE - Cleanup phone after save (Safe)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <h3 style="margin-top:30px;">Database &amp; Storage</h3>
+                <div class="cat-row">
+                    <div class="cat-col">
+                        <label>Root Database Path</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">✅ Point this to your <strong>Google Drive</strong> folder for automatic cloud backup. e.g. <code>C:\Users\you\My Drive\Panop</code></p>
+                        <input type="text" id="rootDirInput" placeholder="panop_output or full path to Google Drive folder">
+                    </div>
+                    <div class="cat-col">
+                        <label>Trusted Android Devices (ADB IPs)</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">📶 From Android: <strong>Developer Options &rsaquo; Wireless Debugging</strong> &rsaquo; copy the <code>IP address &amp; Port</code> shown on the main screen.</p>
+                        <input type="text" id="wirelessIps" placeholder="192.168.1.100:42135, ...">
+                    </div>
+                </div>
+
+                <h3 style="margin-top:30px;">Chrome Bookmarks</h3>
+                <div class="cat-row">
+                    <div class="cat-col">
+                        <label>Panop Bookmark Folder Name</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Bookmarks are saved under <strong>Outros Favoritos &rsaquo; [this folder] &rsaquo; [Category]</strong>.</p>
+                        <input type="text" id="envBookmarkFolder" placeholder="Panop">
+                    </div>
+                    <div class="cat-col">
+                        <label>Chrome Profile Folder</label>
+                        <p style="color:#666; font-size:12px; margin:5px 0;">Usually <strong>Default</strong>, <strong>Profile 1</strong>, etc. Check <code>chrome://version</code> if unsure.</p>
+                        <input type="text" id="envChromeProfile" placeholder="Default">
+                    </div>
+                </div>
+
+                <h3 style="margin-top:30px;">Zotero Integration</h3>
+                <p style="color:#666; font-size:12px;">Every saved entry is automatically pushed to your Zotero library. 
+                    <br>• <strong>API Key:</strong> Get it at <a href="#" onclick="openUrl('https://www.zotero.org/settings/keys')" style="color:#3b82f6;">zotero.org/settings/keys</a>
+                    <br>• <strong>User ID:</strong> On that <strong>same page</strong>, look at the top left where it says <em>"Your userID for use in API calls is <strong>######</strong>"</em>.
+                </p>
+                <div class="cat-row">
+                    <div class="cat-col">
+                        <label>Zotero API Key</label>
+                        <input type="password" id="envZoteroKey" placeholder="paste your API key here">
+                    </div>
+                    <div class="cat-col">
+                        <label>Zotero User ID <span style="color:#666; font-weight:normal;">(numeric, from zotero.org/settings)</span></label>
+                        <input type="text" id="envZoteroUserId" placeholder="e.g. 1234567">
+                    </div>
+                    <div class="cat-col">
+                        <label>Collection Key <span style="color:#666; font-weight:normal;">(optional)</span></label>
+                        <input type="text" id="envZoteroCollection" placeholder="e.g. ABC12DEF — leave blank for top-level">
+                    </div>
+                </div>
+                <button class="secondary" style="margin-top:8px;" onclick="testZotero()">✦ Test Zotero Connection</button>
+                <span id="zoteroTestResult" style="margin-left:12px; font-size:13px;"></span>
+
+                <button style="margin-top:30px;" onclick="saveAllSettings()">Save All Settings</button>
+            </div>
+        </div>
+
+        <!-- Export -->
+        <div id="export" class="panel">
+            <h1>File Exports</h1>
+            <div class="card" style="display:flex; flex-direction:column; gap:15px;">
+                <p style="color:#aaa;">Generate flat document versions of your entire Panop graph.</p>
+                <div><button onclick="triggerExport('json')">Download JSON Document</button> <span style="color:#666; font-size:12px; margin-left:10px;">Raw programmable dictionary mappings</span></div>
+                <div><button onclick="triggerExport('csv')">Download CSV Matrix</button> <span style="color:#666; font-size:12px; margin-left:10px;">Excel-ready tabular breakdown</span></div>
+                <div><button onclick="triggerExport('md')">Download Markdown Digest</button> <span style="color:#666; font-size:12px; margin-left:10px;">Clean formatted link graph</span></div>
+                <div><button class="secondary" onclick="triggerExport('zip')">Pack Database to ZIP</button> <span style="color:#666; font-size:12px; margin-left:10px;">Compress content without disturbing exports</span></div>
+                
+                <h3 style="margin-top:20px;">Environment Hotlinks</h3>
+                <div>
+                    <button onclick="openSysFolder('root')" class="secondary" style="margin-right:10px;">📁 Open Root Database</button>
+                    <button onclick="openSysFolder('ris')" class="secondary" style="margin-right:10px;">📋 Open Zotero Batches</button>
+                    <button onclick="openSysFolder('exports')" class="secondary">📬 Open Generated Exports</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+        let configData = null;
+        let historyData = null;
+        let selectedUrls = new Set();
+        let envData = null;
+        let historyLoading = false;
+        let pollCount = 0;  // used to throttle expensive polls
+        let historyVersion = null; // prevents redundant UI re-renders
+        let duplicateUrls = new Set(); // holds all URLs that are part of a duplicate group
+        let phoneUrls = new Set();     // canonical URLs open on Android per last fetch/inspect
+        const TRACKING_RE = /^(utm_|fbclid|gclid|mc_|ref_|_ga|_hs|ref$|src$|source$)/i;
+        function canonUrl(u) {
+            if (!u) return "";
+            try {
+                const url = new URL(u);
+                let host = url.hostname.toLowerCase().replace(/^www\./,'').replace(/^m\./,'').replace(/^mobile\./,'');
+                let path = url.pathname;
+                if (host === "arxiv.org") path = path.replace(/^\/pdf\//,'/abs/').replace(/\.pdf$/i,'');
+                path = path.replace(/\/+$/,'') || '/';
+                const params = [];
+                for (const [k,v] of url.searchParams) if (!TRACKING_RE.test(k)) params.push([k,v]);
+                params.sort((a,b)=>a[0].localeCompare(b[0]));
+                const qs = params.map(([k,v])=>`${k}=${v}`).join('&');
+                return `${url.protocol}//${host}${path}${qs?'?'+qs:''}`;
+            } catch(_) { return (u||'').toLowerCase().trim(); }
+        }
+
+        function switchPanel(id) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            // Works both from nav clicks (event.currentTarget) and programmatic calls
+            let target = (typeof event !== 'undefined' && event && event.currentTarget) ? event.currentTarget : null;
+            if (target) {
+                target.classList.add('active');
+            } else {
+                document.querySelectorAll('.nav-item').forEach(n => {
+                    if (n.getAttribute('onclick') && n.getAttribute('onclick').includes(`'${id}'`)) n.classList.add('active');
+                });
+            }
+        }
+
+        function openUrl(url) {
+            try { require('electron').shell.openExternal(url); } catch(e) {}
+        }
+
+        async function init() {
+            try {
+                let eRes = await fetch('http://127.0.0.1:8000/api/v1/env');
+                envData = await eRes.json();
+                document.getElementById('rootDirInput').value = envData.root_dir || 'panop_output';
+                document.getElementById('envInterval').value = envData.interval_hours || 6;
+                document.getElementById('envStrict').value = envData.strict_domain_scan !== false ? "true" : "false";
+                document.getElementById('envCatchUncat').value = envData.catch_uncategorized === true ? "true" : "false";
+                document.getElementById('envCloseTabs').value = envData.close_tabs_after_save === true ? "true" : "false";
+                document.getElementById('envBookmarkFolder').value = envData.bookmark_folder || 'Panop';
+                document.getElementById('envChromeProfile').value = envData.chrome_profile || 'Default';
+                document.getElementById('envZoteroKey').value = envData.zotero_api_key || '';
+                document.getElementById('envZoteroUserId').value = envData.zotero_user_id || '';
+                document.getElementById('envZoteroCollection').value = envData.zotero_collection_key || '';
+
+                let res = await fetch('http://127.0.0.1:8000/api/v1/config');
+                configData = await res.json();
+
+                document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
+                document.getElementById('serverBadge').style.color = "#10b981";
+                renderCategories();
+                document.getElementById('wirelessIps').value = (configData.wireless_ips || []).join(', ');
+                await loadHistory();
+            } catch(e) {
+                setTimeout(init, 2000);
+            }
+        }
+        
+        async function pollBackground() {
+            pollCount++;
+            try {
+                await fetch('http://127.0.0.1:8000/api/v1/env');
+                document.getElementById('serverBadge').textContent = "ONLINE (Port 8000)";
+                document.getElementById('serverBadge').style.color = "#10b981";
+                let sr = await fetch('http://127.0.0.1:8000/api/v1/status');
+                let st = await sr.json();
+                updateSweepStatus(st);
+                if (Array.isArray(st.last_tab_urls)) {
+                    phoneUrls = new Set(st.last_tab_urls.map(canonUrl));
+                }
+                refreshBookmarkQueue();
+                // Poll enrich status
+                let er = await fetch('http://127.0.0.1:8000/api/v1/history/enrich/status');
+                let et = await er.json();
+                let eb = document.getElementById('enrichBtn');
+                let stopEb = document.getElementById('stopEnrichBtn');
+                if (stopEb) stopEb.style.display = et.running ? 'inline-block' : 'none';
+                if (et.running) {
+                    eb.textContent = `✦ Enriching ${et.done}/${et.total}...`;
+                    eb.disabled = true;
+                } else if (et.last_run && et.updated > 0) {
+                    eb.textContent = `✦ Enrich Titles (last: +${et.updated})`;
+                    eb.disabled = false;
+                } else {
+                    eb.textContent = '✦ Enrich Titles';
+                    eb.disabled = false;
+                }
+                // Throttle: only check duplicates every 6th poll (~60s)
+                if (pollCount % 6 === 1) {
+                    try {
+                        let dr = await fetch('http://127.0.0.1:8000/api/v1/history/duplicates');
+                        let dt = await dr.json();
+                        let dw = document.getElementById('dupesWrap');
+                        duplicateUrls.clear();
+                        if (dt.total_groups > 0) {
+                            dw.style.display = 'inline';
+                            document.getElementById('stDupes').textContent = `${dt.total_groups} group(s) — click to view`;
+                            // Flatten all duplicate group URLs into our global set
+                            Object.values(dt.groups).forEach(group => {
+                                group.forEach(item => duplicateUrls.add(item.url));
+                            });
+                        } else { dw.style.display = 'none'; }
+                        rebuildLedgerCatFilter(); // update duplicate count in UI if needed
+                    } catch(e) {}
+                }
+                // Always check meta — bulk sync flips z/b flags without adding rows
+                // and the user needs the icon colors to update live.
+                if (!historyLoading) {
+                    try {
+                        let mr = await fetch('http://127.0.0.1:8000/api/v1/history/meta');
+                        let meta = await mr.json();
+                        if (meta.version !== historyVersion) {
+                            await loadHistory();
+                            historyVersion = meta.version;
+                        }
+                    } catch(e) {}
+                }
+                // Bulk-sync progress badge on the status line
+                try {
+                    let bsr = await fetch('http://127.0.0.1:8000/api/v1/history/sync/status');
+                    let bs = await bsr.json();
+                    let lbl = document.getElementById('ldrStatus');
+                    let stopBs = document.getElementById('stopBulkBtn');
+                    if (stopBs) stopBs.style.display = bs.running ? 'inline-block' : 'none';
+                    if (lbl) {
+                        if (bs.running) {
+                            lbl.style.color = '#fbbf24';
+                            lbl.textContent = `⟳ Bulk ${bs.type} sync: ${bs.done}/${bs.total} (${bs.succeeded} ok, ${bs.failed} fail)`;
+                        } else if (bs.total > 0) {
+                            lbl.style.color = '#10b981';
+                            lbl.textContent = `✓ Last sync: ${bs.succeeded}/${bs.total} ok, ${bs.failed} failed`;
+                        }
+                    }
+                } catch(e) {}
+            } catch(e) {
+                document.getElementById('serverBadge').textContent = "OFFLINE";
+                document.getElementById('serverBadge').style.color = "#ef4444";
+            }
+        }
+
+        async function triggerEnrich() {
+            let btn = document.getElementById('enrichBtn');
+            btn.textContent = '✦ Starting...';
+            btn.disabled = true;
+            await fetch('http://127.0.0.1:8000/api/v1/history/enrich', {method:'POST'});
+        }
+
+        function updateSweepStatus(st) {
+            document.getElementById('stDevice').textContent = st.device_id || (st.adb_connected ? 'Connected' : 'Not connected');
+            document.getElementById('stDevice').style.color = st.adb_connected ? '#10b981' : '#ef4444';
+            document.getElementById('stSeen').textContent = st.tabs_seen !== undefined ? st.tabs_seen : '—';
+            document.getElementById('stNew').textContent = st.tabs_new !== undefined ? st.tabs_new : '—';
+            document.getElementById('stMatched').textContent = st.tabs_matched !== undefined ? st.tabs_matched : '—';
+            document.getElementById('sweepRunning').style.display = st.running ? 'inline-block' : 'none';
+            let errDiv = document.getElementById('sweepError');
+            if (st.last_error) {
+                errDiv.style.display = 'block';
+                errDiv.textContent = '⚠ ' + st.last_error;
+            } else {
+                errDiv.style.display = 'none';
+            }
+        }
+
+        setInterval(pollBackground, 10000);
+
+        function renderCategories() {
+            const wrap = document.getElementById('categoriesWrapper');
+            wrap.innerHTML = '';
+            let s = '';
+            
+            // Add static migration target
+            s += `<option value="uncategorized">Uncategorized</option>`;
+
+            configData.categories.forEach((cat, idx) => {
+                s += `<option value="${cat.id}">${cat.name}</option>`;
+                wrap.innerHTML += `
+                <div class="card" style="border-left-color: #444;">
+                    <div class="cat-row">
+                        <div class="cat-col"><label>ID</label><input type="text" id="cat_id_${idx}" value="${cat.id}"></div>
+                        <div class="cat-col"><label>Display Name</label><input type="text" id="cat_name_${idx}" value="${cat.name}"></div>
+                        <div class="cat-col"><label>Output Directory (Absolute path allowed e.g. C:\\Users\\...)</label><input type="text" id="cat_dest_${idx}" value="${cat.dest_folder}"></div>
+                    </div>
+                    <div class="cat-row" style="background:#111; padding:10px; border-radius:5px;">
+                        <div class="cat-col"><label>Chrome Tab Group Name</label><input type="text" placeholder="e.g. Research (requires group match)" id="cat_grp_${idx}" value="${cat.tab_group || ''}"></div>
+                        <div class="cat-col"><label>Max Age (Days Limits)</label><input type="text" placeholder="Leave empty for infinity" id="cat_age_${idx}" value="${cat.max_age_days || ''}"></div>
+                    </div>
+                    <div class="cat-row">
+                        <div class="cat-col"><label>URL/Domain Triggers (comma sep)</label><input type="text" id="cat_dom_${idx}" value="${(cat.domain_keywords || []).join(', ')}" /></div>
+                    </div>
+                    <div class="cat-row">
+                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Mode</label>
+                            <select id="cat_req_mode_${idx}">
+                                <option value="ALL" ${cat.body_required_mode !== 'ANY' ? 'selected' : ''}>ALL words must exist</option>
+                                <option value="ANY" ${cat.body_required_mode === 'ANY' ? 'selected' : ''}>ANY single word is enough</option>
+                            </select>
+                        </div>
+                        <div class="cat-col"><label style="color:#10b981;">REQUIRED Body Keywords</label><input type="text" id="cat_req_${idx}" value="${(cat.body_required || []).join(', ')}" /></div>
+                        <div class="cat-col"><label style="color:#ef4444;">FORBIDDEN Body Keywords</label><input type="text" id="cat_for_${idx}" value="${(cat.body_forbidden || []).join(', ')}" /></div>
+                    </div>
+                    <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+                        <button class="secondary" style="background:#1a0a0a; color:#ef4444; border:1px solid #3a1010; font-size:12px; padding:6px 12px;" onclick="removeCategory(${idx})">✕ Remove Category</button>
+                    </div>
+                </div>`;
+            });
+            document.getElementById('moveSelect').innerHTML = s;
+        }
+
+        function addCategory() {
+            configData.categories.push({ id: "new_id", name: "Custom", dest_folder: "CustomFolder", domain_keywords: [], body_required: [], body_required_mode: "ALL", body_forbidden: [], tab_group: "", max_age_days: "" });
+            renderCategories();
+        }
+
+        function removeCategory(idx) {
+            if (!confirm(`Remove category "${configData.categories[idx].name}"? This only removes it from Panop's config — your existing files and bookmarks are untouched.`)) return;
+            configData.categories.splice(idx, 1);
+            renderCategories();
+        }
+
+        async function saveCategories() {
+            configData.categories.forEach((cat, idx) => {
+                cat.id = document.getElementById(`cat_id_${idx}`).value;
+                cat.name = document.getElementById(`cat_name_${idx}`).value;
+                cat.dest_folder = document.getElementById(`cat_dest_${idx}`).value;
+                cat.tab_group = document.getElementById(`cat_grp_${idx}`).value;
+                cat.max_age_days = document.getElementById(`cat_age_${idx}`).value;
+                cat.domain_keywords = document.getElementById(`cat_dom_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
+                cat.body_required_mode = document.getElementById(`cat_req_mode_${idx}`).value;
+                cat.body_required = document.getElementById(`cat_req_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
+                cat.body_forbidden = document.getElementById(`cat_for_${idx}`).value.split(',').map(s=>s.trim()).filter(s=>s);
+            });
+            await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData), headers:{'Content-Type':'application/json'} });
+            alert("Pipeline config saved!");
+            rebuildCatFilter();
+        }
+
+        async function triggerMerge() {
+            let res = await fetch('http://127.0.0.1:8000/api/v1/history/merge', {method:'POST'});
+            let data = await res.json();
+            alert(`Autonomous merge complete! Combined ${data.merged} duplicate groups.`);
+            await loadHistory();
+        }
+
+        async function triggerBulkSync(type) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/history/sync?type=${type}`, {method:'POST'});
+            document.getElementById('ldrStatus').textContent = `⟳ Bulk ${type} sync starting…`;
+        }
+
+        async function cancelBulkSync() {
+            await fetch('http://127.0.0.1:8000/api/v1/history/sync/cancel', {method:'POST'}).catch(()=>{});
+        }
+
+        async function cancelEnrich() {
+            await fetch('http://127.0.0.1:8000/api/v1/history/enrich/cancel', {method:'POST'}).catch(()=>{});
+        }
+
+        // ── Phone status: two independent concerns ─────────────────────
+        //  (A) CONNECTION  → phoneReconnectBtn / phoneReconnectBtnDash
+        //  (B) KEEP-AWAKE  → phoneAwakeBtn / phoneAwakeBtnDash
+        //
+        //  Connection button is the source of truth for "is the phone
+        //  reachable over ADB right now?". Clicking it runs an explicit
+        //  adb kill-server + connect.
+        //
+        //  Awake button is *only* a toggle for screen-timeout. If the phone
+        //  is offline the button disables itself and explains why, but it
+        //  does NOT try to reconnect — that's the connection button's job.
+        // ───────────────────────────────────────────────────────────────
+        let phoneConnected = null;  // null unknown, true connected, false offline
+        let phoneAwakeState = null; // null unknown, true awake, false normal
+
+        function _connBtns() {
+            return [document.getElementById('phoneReconnectBtn'),
+                    document.getElementById('phoneReconnectBtnDash')].filter(x=>x);
+        }
+        function _awakeBtns() {
+            return [document.getElementById('phoneAwakeBtn'),
+                    document.getElementById('phoneAwakeBtnDash')].filter(x=>x);
+        }
+        function _setBtns(btns, text, bg, border, color, disabled) {
+            btns.forEach(b => {
+                b.textContent = text;
+                b.style.background = bg || '';
+                b.style.borderColor = border || '';
+                b.style.color = color || '';
+                b.disabled = !!disabled;
+            });
+        }
+
+        async function refreshPhoneStatus() {
+            try {
+                let r = await fetch('http://127.0.0.1:8000/api/v1/phone/awake_status');
+                let d = await r.json();
+                if (!d.available) {
+                    phoneConnected = false;
+                    phoneAwakeState = null;
+                    _setBtns(_connBtns(), '📵 Phone: disconnected — click to connect',
+                             '#3a1f1f', '#ef4444', '#fca5a5', false);
+                    _setBtns(_awakeBtns(), '💤 Keep phone awake (phone offline)',
+                             '#1a1a1a', '', '#666', true);
+                    return;
+                }
+                phoneConnected = true;
+                _setBtns(_connBtns(), '📶 Phone: connected',
+                         '#064e3b', '#10b981', '#d1fae5', false);
+                phoneAwakeState = !!d.awake;
+                if (phoneAwakeState) {
+                    _setBtns(_awakeBtns(), '☀ Awake mode: ON — click to turn off',
+                             '#3b2860', '#a855f7', '#e9d5ff', false);
+                } else {
+                    _setBtns(_awakeBtns(), '💤 Keep phone awake — click to enable',
+                             '', '', '', false);
+                }
+            } catch(e) {}
+        }
+
+        async function togglePhoneAwake() {
+            if (!phoneConnected || phoneAwakeState === null) return;  // no-op when offline
+            _setBtns(_awakeBtns(), '⟳ ...', '', '', '', true);
+            let endpoint = phoneAwakeState ? 'restore_sleep' : 'keep_awake';
+            try {
+                await fetch('http://127.0.0.1:8000/api/v1/phone/' + endpoint, {method:'POST'});
+            } catch(e) {}
+            await refreshPhoneStatus();
+        }
+
+        async function reconnectPhone() {
+            _setBtns(_connBtns(), '⟳ connecting...', '', '', '', true);
+            try {
+                let r = await fetch('http://127.0.0.1:8000/api/v1/phone/reconnect', {method:'POST'});
+                let d = await r.json();
+                if (!d.connected) {
+                    let msg = d.dropped_after_connect ? '✗ Connected then dropped — wrong port?'
+                            : d.unauthorized && d.unauthorized.length ? '⚠ Unauthorized (accept prompt on phone)'
+                            : d.offline && d.offline.length ? '⚠ Device offline'
+                            : '✗ No device — check Settings › wireless_ips';
+                    _setBtns(_connBtns(), msg, '#3a1f1f', '#ef4444', '#fca5a5', false);
+                    if (d.hint) {
+                        alert('Reconnect failed: ' + msg + '\n\n' + d.hint +
+                              (d.connect_log ? '\n\nadb log:\n' + d.connect_log.join('\n') : ''));
+                    }
+                }
+            } catch(e) {}
+            // Always let the polling state reflect truth, including success cases.
+            await refreshPhoneStatus();
+        }
+
+        // Electron blocks window.prompt(), so we build a real modal dialog.
+        function pairPhone() {
+            // Build (or reuse) the modal
+            let m = document.getElementById('pairModal');
+            if (m) { m.style.display = 'flex'; return; }
+            m = document.createElement('div');
+            m.id = 'pairModal';
+            m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center;';
+            m.innerHTML = `
+              <div style="background:#0d0d0d; border:1px solid #3a1f1f; border-radius:8px; padding:24px 28px; width:480px; max-width:90vw; color:#ddd; font-size:13px;">
+                <h2 style="margin:0 0 4px 0; color:#fbbf24;">🤝 Pair Android Phone</h2>
+                <p style="color:#888; margin:0 0 16px 0; font-size:12px;">
+                  On your phone: <strong>Developer Options › Wireless Debugging › 'Pair device with pairing code'</strong>.
+                  Read the IP address, pairing port, and 6-digit code from that screen — they expire in ~30 seconds, so be ready.
+                </p>
+                <div style="display:flex; flex-direction:column; gap:10px;">
+                  <div>
+                    <label style="color:#aaa; font-size:11px; display:block; margin-bottom:3px;">Phone IP address</label>
+                    <input id="pairHost" type="text" placeholder="192.168.0.3" style="width:100%; padding:7px 10px; background:#1a1a1a; border:1px solid #333; color:#eee; font-family:inherit; font-size:13px;">
+                  </div>
+                  <div>
+                    <label style="color:#aaa; font-size:11px; display:block; margin-bottom:3px;">Pairing port (5 digits — NOT the main port)</label>
+                    <input id="pairPort" type="text" inputmode="numeric" placeholder="38123" style="width:100%; padding:7px 10px; background:#1a1a1a; border:1px solid #333; color:#eee; font-family:inherit; font-size:13px;">
+                  </div>
+                  <div>
+                    <label style="color:#aaa; font-size:11px; display:block; margin-bottom:3px;">6-digit pairing code</label>
+                    <input id="pairCode" type="text" inputmode="numeric" placeholder="123456" style="width:100%; padding:7px 10px; background:#1a1a1a; border:1px solid #333; color:#eee; font-family:inherit; font-size:13px;">
+                  </div>
+                </div>
+                <div id="pairResult" style="display:none; margin-top:14px; padding:10px 12px; border-radius:4px; font-size:12px; white-space:pre-wrap;"></div>
+                <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end;">
+                  <button class="secondary" onclick="closePairModal()" style="padding:6px 14px;">Cancel</button>
+                  <button id="pairSubmitBtn" onclick="submitPair()" style="padding:6px 14px; background:#e84a2e; border:none; color:#fff; cursor:pointer; border-radius:3px;">Pair</button>
+                </div>
+              </div>`;
+            document.body.appendChild(m);
+            setTimeout(() => {
+                let h = document.getElementById('pairHost');
+                // Pre-fill from wireless_ips if present (just the IP part)
+                fetch('http://127.0.0.1:8000/api/v1/config').then(r=>r.json()).then(c => {
+                    let ips = c.wireless_ips || [];
+                    if (ips.length && ips[0]) {
+                        let ip = ips[0].split(':')[0];
+                        if (ip && h && !h.value) h.value = ip;
+                    }
+                }).catch(()=>{});
+                if (h) h.focus();
+            }, 50);
+        }
+        function closePairModal() {
+            let m = document.getElementById('pairModal');
+            if (m) m.style.display = 'none';
+        }
+        async function submitPair() {
+            let host = document.getElementById('pairHost').value.trim().split(':')[0];
+            let port = document.getElementById('pairPort').value.trim().replace(/[^0-9]/g, '');
+            let code = document.getElementById('pairCode').value.trim().replace(/[^0-9]/g, '');
+            let result = document.getElementById('pairResult');
+            let submit = document.getElementById('pairSubmitBtn');
+            if (!host || !port || !code) {
+                result.style.display = 'block';
+                result.style.background = '#3a1f1f'; result.style.color = '#fca5a5';
+                result.textContent = 'All three fields are required.';
+                return;
+            }
+            submit.disabled = true; submit.textContent = '⟳ Pairing...';
+            result.style.display = 'block';
+            result.style.background = '#1a1a1a'; result.style.color = '#888';
+            result.textContent = 'Running adb pair...';
+            try {
+                let url = 'http://127.0.0.1:8000/api/v1/phone/pair?'
+                        + 'host=' + encodeURIComponent(host)
+                        + '&port=' + encodeURIComponent(port)
+                        + '&code=' + encodeURIComponent(code);
+                let r = await fetch(url, {method:'POST'});
+                let d = await r.json();
+                if (d.paired) {
+                    result.style.background = '#064e3b'; result.style.color = '#d1fae5';
+                    result.textContent = '✓ Paired successfully.\n\nNow on your phone go back to the MAIN Wireless Debugging screen, copy the "IP address & Port" shown there into Settings › Trusted Android Devices, then click 🔌 Reconnect Phone.';
+                    submit.textContent = 'Done'; submit.disabled = false;
+                    submit.onclick = closePairModal;
+                } else {
+                    result.style.background = '#3a1f1f'; result.style.color = '#fca5a5';
+                    result.textContent = '✗ Pairing failed.\n\n' + (d.log || d.message || '')
+                                       + (d.hint ? '\n\n' + d.hint : '');
+                    submit.disabled = false; submit.textContent = 'Try again';
+                }
+            } catch(e) {
+                result.style.background = '#3a1f1f'; result.style.color = '#fca5a5';
+                result.textContent = 'Request failed: ' + e;
+                submit.disabled = false; submit.textContent = 'Try again';
+            }
+            refreshPhoneStatus();
+        }
+
+        setInterval(refreshPhoneStatus, 10000);
+        setTimeout(refreshPhoneStatus, 1500);
+        // Back-compat alias (older callers, if any)
+        const refreshPhoneAwakeButton = refreshPhoneStatus;
+
+        async function startDrain() {
+            let btn = document.getElementById('drainBtn');
+            // If currently running, this acts as cancel
+            try {
+                let s = await (await fetch('http://127.0.0.1:8000/api/v1/tabs/drain/status')).json();
+                if (s.running) {
+                    if (!confirm('A drain is already running. Cancel it?')) return;
+                    await fetch('http://127.0.0.1:8000/api/v1/tabs/drain/cancel', {method:'POST'});
+                    return;
+                }
+            } catch(e) {}
+            if (!confirm("Drain mode will wake EVERY suspended tab on your phone one at a time, save matches, and close them. This takes hours for thousands of tabs and will repeatedly switch the foreground tab on your phone. Continue?")) return;
+            await fetch('http://127.0.0.1:8000/api/v1/tabs/drain', {method:'POST'});
+            btn.textContent = '⏹ Stop Drain';
+        }
+
+        async function pollDrain() {
+            try {
+                let s = await (await fetch('http://127.0.0.1:8000/api/v1/tabs/drain/status')).json();
+                let btn = document.getElementById('drainBtn');
+                let lbl = document.getElementById('ldrStatus');
+                if (s.running) {
+                    btn.textContent = `⏹ Stop Drain (${s.processed}/${s.processed + s.remaining})`;
+                    if (lbl) {
+                        lbl.style.color = '#a855f7';
+                        lbl.textContent = `⚡ [${s.phase||'?'}] ${s.processed} done · ${s.saved} saved · ${s.closed} closed · ${s.remaining} left`;
+                    }
+                } else if (s.processed > 0 && !drainShown) {
+                    btn.textContent = '⚡ Drain All Tabs';
+                    if (lbl) {
+                        lbl.style.color = '#10b981';
+                        lbl.textContent = `✓ Drain done: ${s.saved} saved, ${s.closed} closed, ${s.skipped} skipped${s.last_error?' · err: '+s.last_error:''}`;
+                    }
+                    drainShown = true;
+                } else if (!s.running) {
+                    btn.textContent = '⚡ Drain All Tabs';
+                }
+            } catch(e) {}
+        }
+        let drainShown = false;
+        setInterval(pollDrain, 3000);
+
+        async function inspectTabs() {
+            let lbl = document.getElementById('ldrStatus');
+            lbl.style.color = '#fbbf24'; lbl.textContent = '🔍 Inspecting open tabs…';
+            try {
+                let r = await fetch('http://127.0.0.1:8000/api/v1/tabs/inspect');
+                let d = await r.json();
+                if (d.status === 'error') { alert(d.message || 'Inspect failed'); lbl.textContent='Ready'; return; }
+                // Update phone set from fresh inspection
+                if (Array.isArray(d.tabs)) {
+                    phoneUrls = new Set(d.tabs.filter(t=>t.url).map(t=>canonUrl(t.url)));
+                    applyLedgerFilters();
+                }
+                let b = d.buckets || {};
+                let lines = [
+                    `Total tabs on phone: ${d.total}`,
+                    ``,
+                    `✓ Saved (already in history): ${b.saved || 0}`,
+                    `✓ Match (will save next sweep): ${b.match || 0}`,
+                    `? Needs body check: ${b.needs_body_check || 0}`,
+                    `✗ No match: ${b.no_match || 0}`,
+                    `- Discarded (empty URL): ${b.discarded || 0}`,
+                    `- Chrome internal: ${b.chrome_internal || 0}`
+                ];
+                let unmatched = (d.tabs||[]).filter(t => t.status === 'no_match' || t.status === 'needs_body_check');
+                if (unmatched.length) {
+                    lines.push('', '── Tabs not being picked up ──');
+                    unmatched.slice(0,30).forEach(t => lines.push(`  [${t.status}] ${t.url}`));
+                    if (unmatched.length > 30) lines.push(`  …and ${unmatched.length-30} more`);
+                }
+                lbl.style.color = '#10b981'; lbl.textContent = `Inspect: ${b.match||0} would match, ${b.no_match||0} won't`;
+                alert(lines.join('\n'));
+            } catch(e) {
+                lbl.style.color = '#ef4444'; lbl.textContent = '✕ Inspect failed';
+                alert('Inspect failed: ' + e);
+            }
+        }
+
+        async function refreshBookmarkQueue() {
+            // Extension drains the queue in the background — no banner needed.
+            // Kept the function so existing callers don't break, but it's now a no-op.
+            try {
+                let res = await fetch('http://127.0.0.1:8000/api/v1/bookmarks/pending');
+                let data = await res.json();
+                let tag = document.getElementById('flushCount');
+                let banner = document.getElementById('bookmarkBanner');
+                if (tag) tag.textContent = data.count > 0 ? `(${data.count})` : '';
+                if (banner) banner.style.display = 'none';
+            } catch(e) {}
+        }
+
+        async function flushBookmarks() {
+            let res = await fetch('http://127.0.0.1:8000/api/v1/bookmarks/flush', {method:'POST'});
+            let data = await res.json();
+            if (data.status === 'error') {
+                alert(data.message);
+            } else {
+                alert(`Flush complete — saved ${data.saved}, failed ${data.failed}, remaining ${data.remaining}.\nRestart Chrome to see the new bookmarks.`);
+                await loadHistory();
+            }
+            await refreshBookmarkQueue();
+        }
+
+        async function closeSyncedTabs() {
+            if (!confirm("Close every open tab on your Android Chrome whose URL is already saved to both Zotero and Bookmarks?")) return;
+            let res = await fetch('http://127.0.0.1:8000/api/v1/tabs/close-synced', {method:'POST'});
+            let data = await res.json();
+            if (data.status === 'error') { alert(data.message); return; }
+            alert(`Closed ${data.closed} tab(s). Skipped ${data.skipped}, failed ${data.failed} (of ${data.total} total).`);
+        }
+
+        async function manualSyncSingle(url, type) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/history/sync_single?url=${encodeURIComponent(url)}&type=${type}`, {method:'POST'});
+            let data = await res.json();
+            if (data.status === 'ok') {
+                await loadHistory();
+            } else {
+                alert("Sync failed. Check your Zotero credentials in System Settings.");
+            }
+        }
+
+        async function saveAllSettings() {
+            // Save env (interval, flags, paths, Zotero, bookmark folder)
+            let env = Object.assign({}, envData || {}, {
+                root_dir: document.getElementById('rootDirInput').value.trim() || 'panop_output',
+                interval_hours: parseFloat(document.getElementById('envInterval').value) || 6,
+                strict_domain_scan: document.getElementById('envStrict').value === 'true',
+                catch_uncategorized: document.getElementById('envCatchUncat').value === 'true',
+                close_tabs_after_save: document.getElementById('envCloseTabs').value === 'true',
+                bookmark_folder: document.getElementById('envBookmarkFolder').value.trim() || 'Panop',
+                chrome_profile: document.getElementById('envChromeProfile').value.trim() || 'Default',
+                zotero_api_key: document.getElementById('envZoteroKey').value.trim(),
+                zotero_user_id: document.getElementById('envZoteroUserId').value.trim(),
+                zotero_collection_key: document.getElementById('envZoteroCollection').value.trim()
+            });
+            await fetch('http://127.0.0.1:8000/api/v1/env', { method: 'POST', body: JSON.stringify(env), headers:{'Content-Type':'application/json'} });
+            // Save wireless IPs into config
+            let ips = document.getElementById('wirelessIps').value.split(',').map(s=>s.trim()).filter(s=>s);
+            configData.wireless_ips = ips;
+            await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData), headers:{'Content-Type':'application/json'} });
+            envData = env;
+            alert('✅ All settings saved.');
+        }
+
+        async function testZotero(targetId = 'zoteroTestResult') {
+            let el = document.getElementById(targetId);
+            el.style.color = '#aaa'; el.textContent = 'Testing...';
+            let key = document.getElementById('envZoteroKey').value.trim();
+            let uid = document.getElementById('envZoteroUserId').value.trim();
+            if (!key || !uid) { 
+                el.style.color='#ef4444'; 
+                el.textContent = '✕ Missing API key/User ID'; 
+                return; 
+            }
+            try {
+                let r = await fetch(`https://api.zotero.org/users/${uid}/items?limit=1`, { headers: {'Zotero-API-Key': key} });
+                if (r.ok) { 
+                    el.style.color='#10b981'; 
+                    el.textContent = `✓ Connected (${r.headers.get('Total-Results') || '?'} items)`; 
+                }
+                else { 
+                    el.style.color='#ef4444'; 
+                    el.textContent = `✕ Auth Error ${r.status}`; 
+                }
+            } catch(e) { 
+                el.style.color='#ef4444'; 
+                el.textContent = '✕ Network Error'; 
+            }
+        }
+
+        /* ──────────────────────────────────────────────────────
+           Unified dash table + its filter / sort engine
+           ────────────────────────────────────────────────────── */
+        let dashRows = [];       // master in-memory copy of all history rows
+        let dashSortCol = 'date';
+        let dashSortDir = 'desc'; // newest first by default
+
+        function rebuildCatFilter() {
+            let sel = document.getElementById('dashCatFilter');
+            let prev = sel.value;
+            sel.innerHTML = '<option value="">All Categories</option>';
+            let cats = new Set(dashRows.map(r => r.category));
+            cats.forEach(c => { let o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+            sel.value = prev || '';
+        }
+
+        function applyFilters() {
+            let q = (document.getElementById('dashSearch').value || '').toLowerCase();
+            let cat = document.getElementById('dashCatFilter').value;
+            let from = document.getElementById('dashDateFrom').value;
+            let to = document.getElementById('dashDateTo').value;
+
+            let filtered = dashRows.filter(r => {
+                if (q && !r.title.toLowerCase().includes(q) && !r.url.toLowerCase().includes(q)) return false;
+                if (cat && r.category !== cat) return false;
+                if (from && r.date < from) return false;
+                if (to && r.date > to) return false;
+                return true;
+            });
+
+            // Sort
+            filtered.sort((a, b) => {
+                let av = a[dashSortCol] || '', bv = b[dashSortCol] || '';
+                return dashSortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+            });
+
+            renderDashRows(filtered);
+            document.getElementById('dashCount').textContent = `${filtered.length} of ${dashRows.length} entries`;
+        }
+
+        function toggleDupesFilter() {
+            const btn = document.getElementById('ldrDupesToggle');
+            btn.classList.toggle('active');
+            applyLedgerFilters();
+        }
+
+        function sortTable(col) {
+            if (dashSortCol === col) dashSortDir = dashSortDir === 'asc' ? 'desc' : 'asc';
+            else { dashSortCol = col; dashSortDir = 'asc'; }
+            // Update header arrows
+            document.querySelectorAll('.sort-th').forEach(th => {
+                th.classList.remove('asc', 'desc');
+                if (th.dataset.col === col) th.classList.add(dashSortDir);
+            });
+            applyFilters();
+        }
+
+        function clearFilters() {
+            document.getElementById('dashSearch').value = '';
+            document.getElementById('dashCatFilter').value = '';
+            document.getElementById('dashDateFrom').value = '';
+            document.getElementById('dashDateTo').value = '';
+            applyFilters();
+        }
+
+        function catBadgeClass(catName) {
+            if (!catName) return 'cat-badge';
+            let k = catName.toLowerCase().replace(/\s+/g,'');
+            if (k.includes('article')) return 'cat-badge articles';
+            if (k.includes('book')) return 'cat-badge books';
+            if (k.includes('uncat')) return 'cat-badge uncategorized';
+            return 'cat-badge';
+        }
+
+        function renderDashRows(rows) {
+            const tb = document.getElementById('dashBody');
+            if (!tb) return;
+            const fragment = rows.map((r, i) => {
+                let chk = selectedUrls.has(r.url) ? 'checked' : '';
+                let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let enc = encodeURIComponent(r.url);
+                let hasAbstract = !!(r.abstract && r.abstract.trim());
+                let abstractRow = hasAbstract
+                    ? `<tr id="abs_${i}" style="display:none;"><td colspan="6" style="background:#0a0a14; padding:12px 16px; color:#94a3b8; font-size:12px; line-height:1.6; border-bottom:1px solid #1e1e1e;">${r.abstract.replace(/</g,'&lt;')}</td></tr>`
+                    : '';
+                return `<tr>
+                    <td><input type="checkbox" style="width:auto;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="dash_chk_all"></td>
+                    <td style="white-space:nowrap; font-size:12px; color:#666;"><input type="text" id="ddt_${i}" value="${r.date}" class="table-input" style="width:95px;"></td>
+                    <td>
+                        <span class="${catBadgeClass(r.category)}">${r.category || 'Uncategorized'}</span>
+                    </td>
+                    <td class="title-cell">
+                        <input type="text" id="dti_${i}" value="${safeTitle}" title="${safeTitle}" class="table-input">
+                        ${hasAbstract ? `<span style="margin-left:4px; font-size:9px; color:#475569; cursor:pointer;" onclick="let e=document.getElementById('abs_${i}'); e.style.display=e.style.display==='none'?'table-row':'none'" title="Toggle abstract">▼ abstract</span>` : ''}
+                    </td>
+                    <td class="url-cell"><a href="#" title="${safeUrl}" style="color:#3b82f6; text-decoration:none;" onclick="event.preventDefault(); openUrl('${safeUrl}')">${r.url}</a></td>
+                    <td>
+                        <div class="sync-status">
+                            <span class="sync-icon zotero ${r.z_synced?'active':''}" title="${r.z_synced?'Synced to Zotero (Click to retry)':'Not synced to Zotero (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'zotero')">Z</span>
+                            <span class="sync-icon bookmark ${r.b_synced?'active':''}" title="${r.b_synced?'Synced to Chrome Bookmarks (Click to retry)':'Not synced (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'bookmark')">B</span>
+                        </div>
+                    </td>
+                    <td style="white-space:nowrap;">
+                        <button style="padding:3px 7px; font-size:10px; background:#1e293b;" title="Save edits" onclick="inlineSaveDash(decodeURIComponent('${enc}'), ${i}, '${r.catId}')">💾</button>
+                        <button style="padding:3px 7px; font-size:10px; background:#3b1c1c;" title="Delete" onclick="deleteSingle(decodeURIComponent('${enc}'))">✕</button>
+                    </td>
+                </tr>${abstractRow}`;
+            }).join('');
+            tb.innerHTML = fragment;
+        }
+
+        function selectAllDash(checked) {
+            document.querySelectorAll('.dash_chk_all').forEach(cb => {
+                let u = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(u); else selectedUrls.delete(u);
+                cb.checked = checked;
+            });
+            updateActionBar();
+        }
+
+        async function inlineSaveDash(oldUrl, idx, defaultCatId) {
+            let tit = document.getElementById(`dti_${idx}`).value;
+            let dat = document.getElementById(`ddt_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: oldUrl, title: tit, category_id: defaultCatId, date: dat}), headers:{'Content-Type':'application/json'} });
+            await loadHistory();
+        }
+
+        async function deleteSingle(url) {
+            if (!confirm('Delete this entry from the database?')) return;
+            await fetch('http://127.0.0.1:8000/api/v1/history/delete', { method:'POST', body: JSON.stringify({urls: [url]}), headers:{'Content-Type':'application/json'} });
+            await loadHistory();
+        }
+
+        async function loadHistory() {
+            if (historyLoading) return;
+            historyLoading = true;
+            try {
+                let mr = await fetch('http://127.0.0.1:8000/api/v1/history/meta');
+                let meta = await mr.json();
+                historyVersion = meta.version;
+
+                let res = await fetch('http://127.0.0.1:8000/api/v1/history');
+                historyData = await res.json();
+
+                // Build master rows array (newest first), include abstract if present
+                dashRows = Object.entries(historyData).reverse().map(([url, item]) => ({
+                    url,
+                    title: item.title || 'Untitled',
+                    category: item.category || 'Uncategorized',
+                    catId: item.cat_id || 'uncategorized',
+                    date: item.date ? item.date.split('T')[0] : '',
+                    abstract: item.abstract || '',
+                    z_synced: !!item.z_synced,
+                    b_synced: !!item.b_synced
+                }));
+
+                rebuildCatFilter();
+                applyFilters();
+                rebuildLedgerCatFilter();
+                applyLedgerFilters();
+            } finally {
+                historyLoading = false;
+            }
+        }
+
+        /* ── Ledger filter engine (mirrors dashboard) ─────────────── */
+        let ldrRows = [];
+
+        function rebuildLedgerCatFilter() {
+            let sel = document.getElementById('ldrCatFilter');
+            if (!sel) return;
+            let prev = sel.value;
+            sel.innerHTML = '<option value="">All Categories</option>';
+            let cats = new Set(dashRows.map(r => r.category));
+            cats.forEach(c => { let o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+            sel.value = prev || '';
+        }
+
+        function applyLedgerFilters() {
+            let q = (document.getElementById('ldrSearch').value || '').toLowerCase();
+            let cat = document.getElementById('ldrCatFilter').value;
+            let from = document.getElementById('ldrDateFrom').value;
+            let to = document.getElementById('ldrDateTo').value;
+            let showOnlyDupes = document.getElementById('ldrDupesToggle').classList.contains('active');
+
+            ldrRows = dashRows.filter(r => {
+                if (showOnlyDupes && !duplicateUrls.has(r.url)) return false;
+                if (q && !r.title.toLowerCase().includes(q) && !r.url.toLowerCase().includes(q)) return false;
+                if (cat && r.category !== cat) return false;
+                if (from && r.date < from) return false;
+                if (to && r.date > to) return false;
+                return true;
+            });
+            renderLedgerRows(ldrRows);
+            let cnt = document.getElementById('ldrCount');
+            if (cnt) cnt.textContent = `${ldrRows.length} of ${dashRows.length} entries`;
+        }
+
+        function clearLedgerFilters() {
+            document.getElementById('ldrSearch').value = '';
+            document.getElementById('ldrCatFilter').value = '';
+            document.getElementById('ldrDateFrom').value = '';
+            document.getElementById('ldrDateTo').value = '';
+            applyLedgerFilters();
+        }
+
+        function renderLedgerRows(rows) {
+            const tb = document.getElementById('ledgerBody');
+            if (!tb) return;
+            const fragment = rows.map((r, i) => {
+                let chk = selectedUrls.has(r.url) ? 'checked' : '';
+                let safeTitle = r.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let safeUrl = r.url.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+                let enc = encodeURIComponent(r.url);
+                let isDupe = duplicateUrls.has(r.url);
+                let onPhone = phoneUrls.has(canonUrl(r.url));
+                return `<tr style="${isDupe ? 'background: rgba(245, 158, 11, 0.05);' : ''}">
+                    <td><input type="checkbox" style="width:auto;margin:0;" data-url="${safeUrl}" onchange="toggleSelect(decodeURIComponent('${enc}'))" ${chk} class="hist_chk_all"></td>
+                    <td><input type="text" id="ldr_dt_${i}" value="${r.date}" class="table-input" style="width:100%;"></td>
+                    <td><select id="ldr_cat_${i}" class="table-input">
+                        ${(configData ? configData.categories : []).map(c => `<option value="${c.id}" ${c.id===r.catId?'selected':''}>${c.name}</option>`).join('')}
+                        <option value="uncategorized" ${r.catId==='uncategorized'?'selected':''}>Uncategorized</option>
+                    </select></td>
+                    <td><input type="text" id="ldr_ti_${i}" value="${safeTitle}" class="table-input" title="${safeTitle}"></td>
+                    <td class="url-cell"><input type="text" id="ldr_url_${i}" value="${safeUrl}" class="table-input" title="${safeUrl}"></td>
+                    <td style="text-align:center;" title="${onPhone?'Currently open on Android (last fetch)':'Not in last Android fetch'}">
+                        ${onPhone ? '<span style="color:#10b981; font-size:16px;">●</span>' : '<span style="color:#333;">—</span>'}
+                    </td>
+                    <td>
+                        <div class="sync-status">
+                            <span class="sync-icon zotero ${r.z_synced?'active':''}" title="${r.z_synced?'Synced to Zotero (Click to retry)':'Not synced to Zotero (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'zotero')">Z</span>
+                            <span class="sync-icon bookmark ${r.b_synced?'active':''}" title="${r.b_synced?'Synced to Chrome Bookmarks (Click to retry)':'Not synced (Click to sync)'}" onclick="manualSyncSingle(decodeURIComponent('${enc}'), 'bookmark')">B</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div style="display:flex; gap:5px;">
+                            ${isDupe ? '<span title="Duplicate entry detected" style="cursor:help; font-size:14px;">⚠️</span>' : ''}
+                            <button style="padding:6px;font-size:11px;background:#3b82f6;" onclick="inlineSaveLdr(decodeURIComponent('${enc}'),${i})">SAVE</button>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+            tb.innerHTML = fragment;
+        }
+
+        async function inlineSave(oldUrl, idx, defaultCat) {
+            let url = document.getElementById(`url_${idx}`).value;
+            let tit = document.getElementById(`ti_${idx}`).value;
+            let dat = document.getElementById(`dt_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: url, title: tit, category_id: defaultCat, date: dat}), headers:{'Content-Type':'application/json'} });
+            selectedUrls.delete(oldUrl); 
+            await loadHistory();
+        }
+        
+        async function inlineSaveLdr(oldUrl, idx) {
+            let url = document.getElementById(`ldr_url_${idx}`).value;
+            let tit = document.getElementById(`ldr_ti_${idx}`).value;
+            let dat = document.getElementById(`ldr_dt_${idx}`).value;
+            let cat = document.getElementById(`ldr_cat_${idx}`).value;
+            await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: oldUrl, url: url, title: tit, category_id: cat, date: dat}), headers:{'Content-Type':'application/json'} });
+            selectedUrls.delete(oldUrl); 
+            await loadHistory();
+        }
+
+        function toggleSelect(url) {
+            if (selectedUrls.has(url)) selectedUrls.delete(url);
+            else selectedUrls.add(url);
+            updateActionBar();
+            loadHistory();
+        }
+        
+        function selectAllCat(catId, checked) {
+            document.querySelectorAll(`.cat_chk_${catId}`).forEach(cb => {
+                let rUrl = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(rUrl);
+                else selectedUrls.delete(rUrl);
+            });
+            updateActionBar();
+            loadHistory();
+        }
+
+        function selectAllHistory(checked) {
+            document.querySelectorAll(`.hist_chk_all`).forEach(cb => {
+                let rUrl = cb.getAttribute('data-url');
+                if (checked) selectedUrls.add(rUrl);
+                else selectedUrls.delete(rUrl);
+            });
+            updateActionBar();
+            loadHistory();
+        }
+
+        function updateActionBar() {
+            let ab = document.getElementById('editActionBar');
+            if (selectedUrls.size > 0) {
+                ab.style.display = 'flex';
+                document.getElementById('selCount').innerText = selectedUrls.size;
+            } else {
+                ab.style.display = 'none';
+            }
+        }
+
+        function clearSelection() {
+            selectedUrls.clear();
+            document.getElementById('editActionBar').style.display = 'none';
+            loadHistory();
+        }
+
+        async function deleteSelected() {
+            if(!confirm("Erase " + selectedUrls.size + " items from local database permanently?")) return;
+            await fetch('http://127.0.0.1:8000/api/v1/history/delete', { method:'POST', body: JSON.stringify({urls: Array.from(selectedUrls)}), headers:{'Content-Type':'application/json'} });
+            clearSelection();
+            loadHistory();
+        }
+
+        async function moveSelected() {
+            let tar = document.getElementById('moveSelect').value;
+            for (let url of selectedUrls) {
+                let item = historyData[url];
+                if (!item) continue;
+                await fetch('http://127.0.0.1:8000/api/v1/history/edit', { method:'POST', body: JSON.stringify({old_url: url, url: url, title: item.title, category_id: tar, date: item.date || new Date().toISOString()}), headers:{'Content-Type':'application/json'} });
+            }
+            clearSelection();
+            await loadHistory();
+        }
+
+        async function triggerExport(ext) {
+            let res = await fetch(`http://127.0.0.1:8000/api/v1/export/${ext}`, { method: 'POST' });
+            let data = await res.json();
+            alert(`Generated Export Successfully at:\n${data.path}`);
+        }
+
+        async function saveNetwork() {
+            envData.root_dir = document.getElementById('rootDirInput').value.trim() || 'panop_output';
+            envData.interval_hours = parseFloat(document.getElementById('envInterval').value) || 6;
+            envData.strict_domain_scan = document.getElementById('envStrict').value === "true";
+            envData.catch_uncategorized = document.getElementById('envCatchUncat').value === "true";
+            envData.close_tabs_after_save = document.getElementById('envCloseTabs').value === "true";
+            await fetch('http://127.0.0.1:8000/api/v1/env', { method: 'POST', body: JSON.stringify(envData), headers:{'Content-Type':'application/json'} });
+            
+            configData.wireless_ips = document.getElementById('wirelessIps').value.split(',').map(s=>s.trim()).filter(s=>s);
+            await fetch('http://127.0.0.1:8000/api/v1/config', { method: 'POST', body: JSON.stringify(configData), headers:{'Content-Type':'application/json'} });
+            alert("Settings committed successfully!");
+        }
+
+        async function triggerSweep() {
+            const btn = document.getElementById('sweepBtn');
+            btn.innerText = "EXECUTING...";
+            btn.disabled = true;
+            try {
+                await fetch('http://127.0.0.1:8000/api/v1/fetch_now', { method: 'POST' });
+            } catch(e) {}
+            // Poll for new results every 5s for up to 10 minutes
+            let elapsed = 0;
+            let lastCount = Object.keys(historyData || {}).length;
+            const stopSweepPoll = () => {
+                clearInterval(pollSweep);
+                btn.innerText = 'FETCH NOW FROM ANDROID';
+                btn.disabled = false;
+            };
+            const pollSweep = setInterval(async () => {
+                elapsed += 5;
+                let mins = Math.floor(elapsed / 60), secs = elapsed % 60;
+                btn.innerText = `FETCHING ${mins}m${secs}s...`;
+                try {
+                    let sr = await fetch('http://127.0.0.1:8000/api/v1/status');
+                    let st = await sr.json();
+                    if (st && st.running === false) {
+                        if (st.last_error) alert("Fetch failed:\n\n" + st.last_error);
+                        stopSweepPoll();
+                        await loadHistory();
+                        return;
+                    }
+                } catch(e) {}
+                try {
+                    let r = await fetch('http://127.0.0.1:8000/api/v1/history');
+                    let h = await r.json();
+                    let newCount = Object.keys(h).length;
+                    if (newCount !== lastCount) {
+                        lastCount = newCount;
+                        historyData = h;
+                        if (!historyLoading) await loadHistory();
+                    }
+                } catch(e) {}
+                if (elapsed >= 600) {
+                    stopSweepPoll();
+                    await loadHistory();
+                }
+            }, 5000);
+        }
+
+        async function openSysFolder(type) {
+            try {
+                let res = await fetch('http://127.0.0.1:8000/api/v1/system_paths');
+                let p = await res.json();
+                let tar = p.output_dir;
+                if (type === 'ris') tar += '\\ris';
+                if (type === 'exports') tar = p.export_dir;
+                ipcRenderer.send('open-local-path', tar);
+            } catch(e) {}
+        }
+        
+        init();
+    </script>
+</body>
+</html>
