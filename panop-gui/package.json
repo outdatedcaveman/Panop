@@ -7,9 +7,9 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "author": "outdatedcaveman",
+  "license": "MIT",
+  "description": "Panop desktop app — automated mobile knowledge capture from Android Chrome.",
   "devDependencies": {
     "electron": "^41.2.0",
     "electron-packager": "^17.1.2"
