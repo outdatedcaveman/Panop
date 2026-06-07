@@ -16,3 +16,6 @@ panop-server/panop_env.json
 # Git backups
 .git.bak/
 
+dist-gui/
+build_*.log
+build_panop*.log
