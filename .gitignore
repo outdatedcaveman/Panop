@@ -19,3 +19,4 @@ panop-server/panop_env.json
 dist-gui/
 build_*.log
 build_panop*.log
+panop_env.json
