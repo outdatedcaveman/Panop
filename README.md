@@ -23,7 +23,17 @@ Panop is a completely local, zero-cloud knowledge capture pipeline. It connects 
 - **Node.js 18+** (Electron desktop app)
 - An **Android device** with [USB or Wireless debugging](https://developer.android.com/tools/adb) enabled
 
+## Documentation
+
+- **[Getting started](docs/GETTING_STARTED.md)** — zero to your first captured batch
+- **[Configuration](docs/CONFIGURATION.md)** — every setting explained
+- **[ADB pairing](docs/ADB_PAIRING.md)** — connecting your phone (USB & Wi-Fi)
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** — common fixes
+- **[Architecture](docs/ARCHITECTURE.md)** — how Panop works under the hood
+
 ## Install & run
+
+> **Just want to use it?** Download the packaged build from [Releases](https://github.com/outdatedcaveman/Panop/releases), unzip, and run the executable — it launches the server for you. The steps below are for running from source.
 
 Panop has two parts — a Python server and an Electron GUI. Run the server first, then launch the GUI.
 
