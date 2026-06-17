@@ -1872,7 +1872,22 @@ def _drain_classify_and_save(url, title, categories, env, tid):
         return False, False
     url_lower = url.lower()
     matched = None
-    for cat in categories:
+    # Master engine FIRST — the one shared classifier (egon lib.classifier via
+    # /api/v1/classify), same as Routster. Bruno 2026-06-17: one high-quality
+    # engine for all surfaces. Map its taxonomy verdict to a local category by
+    # name/id; on miss or if the endpoint is down, fall back to local rules.
+    try:
+        _mr = requests.post("http://127.0.0.1:8000/api/v1/classify",
+                            json={"url": url, "title": title}, timeout=8).json()
+        if _mr.get("action") == "match" and _mr.get("category") and _mr["category"] != "reject":
+            _mc = _mr["category"]; _mcn = _mc.replace("_", " ").lower()
+            for cat in categories:
+                if cat.get("name", "").lower() == _mcn or cat.get("id", "").lower() == _mc:
+                    matched = cat; break
+    except Exception:
+        matched = None
+    if not matched:
+      for cat in categories:
         domains = cat.get("domain_keywords", [])
         if domains and not any(d.lower() in url_lower for d in domains if d):
             continue
