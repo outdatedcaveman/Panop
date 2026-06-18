@@ -88,7 +88,7 @@ def get_env():
             "catch_uncategorized": False,
             "strict_domain_scan": True,
             "port": 8000,
-            "bookmark_folder": "Panop",          # name of Panop subfolder inside Outros Favoritos
+            "bookmark_folder": "KMS Output",          # name of Panop subfolder inside Outros Favoritos
             "zotero_api_key": "",                 # Zotero Web API key
             "zotero_user_id": "",                 # Zotero numeric user ID
             "zotero_collection_key": "",          # optional: target collection key
@@ -102,12 +102,12 @@ def get_env():
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","Panop"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("chrome_profile", "Default")]:
+        for k, v in [("bookmark_folder","KMS Output"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("chrome_profile", "Default")]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
     except:
-        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"Panop","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":""}
+        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"KMS Output","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":""}
 
 def save_env(env):
     with open(ENV_FILE, "w") as f: json.dump(env, f, indent=4)

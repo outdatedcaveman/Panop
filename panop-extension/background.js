@@ -2,7 +2,7 @@
 // and actively dedupes the Panop folder tree on every run.
 
 const PANOP_BASE = "http://127.0.0.1:8000";
-const PANOP_ROOT_NAME = "Panop";
+const PANOP_ROOT_NAME = "KMS Output";
 const POLL_MINUTES = 0.5;            // MV3 minimum is 0.5 min
 const BATCH_SIZE = 40;
 const DRAIN_ITERATIONS = 50;         // per trigger, can clear up to 2000 items
