@@ -1,4 +1,21 @@
-import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, re, uuid
+import sys
+import subprocess as _sp
+if sys.platform == "win32":
+    _CREATE_NO_WINDOW = 0x08000000
+    _orig_popen_init = _sp.Popen.__init__
+    def _silent_popen_init(self, *args, **kwargs):
+        flags = kwargs.get("creationflags", 0) | _CREATE_NO_WINDOW
+        kwargs["creationflags"] = flags
+        si = kwargs.get("startupinfo")
+        if si is None:
+            si = _sp.STARTUPINFO()
+        si.dwFlags |= _sp.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = si
+        return _orig_popen_init(self, *args, **kwargs)
+    _sp.Popen.__init__ = _silent_popen_init
+
+import os, json, threading, time, urllib.request, zipfile, subprocess, math, csv, re, uuid, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from bs4 import BeautifulSoup
@@ -88,29 +105,41 @@ def get_env():
             "catch_uncategorized": False,
             "strict_domain_scan": True,
             "port": 8000,
-            "bookmark_folder": "KMS Output",          # name of Panop subfolder inside Outros Favoritos
+            "bookmark_folder": "KMS Output",     # unified bookmark base (Inbox/Panop + Routster). Bruno 2026-06-18
+            "restrict_categories": [],            # if non-empty, ONLY these cat ids are saved+closed (e.g. ["articles","books","science_news"])
             "zotero_api_key": "",                 # Zotero Web API key
             "zotero_user_id": "",                 # Zotero numeric user ID
             "zotero_collection_key": "",          # optional: target collection key
             "close_tabs_after_save": False,       # opt-in: close tab on phone after successful save
+            "require_manual_vetting_before_close": True,
+            "enable_autonomous_sweep": False,
+            "resolve_terminal_redirects": True,
             "chrome_profile": "Default"           # Chrome profile folder name
         }
         with open(ENV_FILE, "w") as f: json.dump(env, f)
         return env
     try:
-        with open(ENV_FILE, "r") as f:
+        # utf-8-sig: tolerate a BOM. A BOM made json.load throw, which silently
+        # fell through to the credential-LESS default dict — that is exactly how
+        # the live Zotero api_key/user_id went empty and saves began failing.
+        # Bruno 2026-06-14.
+        with open(ENV_FILE, "r", encoding="utf-8-sig") as f:
             env = json.load(f)
         # Back-fill new keys if missing (upgrade path)
         changed = False
-        for k, v in [("bookmark_folder","KMS Output"),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("chrome_profile", "Default")]:
+        for k, v in [("bookmark_folder","KMS Output"),("restrict_categories", []),("zotero_api_key",""),("zotero_user_id",""),("zotero_collection_key",""),("close_tabs_after_save", False), ("require_manual_vetting_before_close", True), ("enable_autonomous_sweep", False), ("resolve_terminal_redirects", True), ("chrome_profile", "Default")]:
             if k not in env: env[k] = v; changed = True
         if changed: save_env(env)
         return env
     except:
-        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"KMS Output","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":""}
+        return {"root_dir":"panop_output","interval_hours":6,"catch_uncategorized":False,"strict_domain_scan":True,"port":8000,"bookmark_folder":"KMS Output","zotero_api_key":"","zotero_user_id":"","zotero_collection_key":"","close_tabs_after_save":False,"require_manual_vetting_before_close":True,"enable_autonomous_sweep":False,"resolve_terminal_redirects":True}
 
 def save_env(env):
     with open(ENV_FILE, "w") as f: json.dump(env, f, indent=4)
+
+def _manual_vetting_required(env=None):
+    env = env or get_env()
+    return bool(env.get("require_manual_vetting_before_close", True))
 
 def OUTPUT_DIR(): return get_env().get("root_dir", "panop_output")
 def RIS_DIR(): return os.path.join(OUTPUT_DIR(), "ris")
@@ -159,11 +188,152 @@ def normalize_title(t):
     if not t: return ""
     return re.sub(r'\s+', ' ', t.lower().strip())
 
+
+# ── QUALITY GATE ────────────────────────────────────────────────────────────
+# Bruno 2026-06-14: the Panop Zotero tree had ~43% duplicates plus hundreds of
+# Cloudflare/recaptcha/403 interstitials and "Untitled"/domain-as-title rows —
+# the pipeline saved whatever it fetched, with no validity check. NOTHING is
+# saved (Zotero or bookmark) unless it passes this gate, and a junked tab is
+# left OPEN (never close-eligible, since z/b stay false).
+_JUNK_TITLE_SUBSTRINGS = (
+    "just a moment", "checking your browser", "checking your connection",
+    "checking if the site connection is secure", "attention required",
+    "are you a robot", "verify you are human", "please verify you are",
+    "verifying you are human", "recaptcha", "captcha", "ddos protection",
+    "access denied", "access to this page has been denied",
+    "you have been blocked", "you are being rate limited", "rate limited",
+    "bot verification", "human verification", "security check",
+    "enable javascript", "javascript is required", "please enable cookies",
+    "403 forbidden", "404 not found", "error 404", "error 403",
+    "page not found", "page not available", "this page isn", "isn’t available",
+    "site can’t be reached", "this site can", "502 bad gateway",
+    "503 service", "service unavailable", "too many requests",
+    "are you human", "one moment, please", "loading…", "loading...",
+)
+_PLACEHOLDER_TITLES = {
+    "", "untitled", "(no title)", "no title", "document", "new tab",
+    "redirecting", "redirecting…", "redirect", "loading", "home",
+}
+
+def _is_junk_page(title, url="", abstract=""):
+    """Return a short reason string if this page is NOT worth saving (a block
+    page / error / contentless extraction), else None. Title-based so it works
+    everywhere a save is attempted, with no extra fetch."""
+    t = normalize_title(title)
+    if t in _PLACEHOLDER_TITLES:
+        return "placeholder_title"
+    if len(t) <= 2:
+        return "title_too_short"
+    for pat in _JUNK_TITLE_SUBSTRINGS:
+        if pat in t:
+            return f"block_or_error_page:{pat}"
+    # Title that is just a bare domain (e.g. "www.psypost.org") = failed
+    # extraction; never the real article title.
+    tn = t[4:] if t.startswith("www.") else t
+    if re.fullmatch(r"[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}", tn):
+        return "title_is_bare_domain"
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).netloc or "").lower()
+        host = host[4:] if host.startswith("www.") else host
+        if host and tn == host:
+            return "title_is_domain"
+    except Exception:
+        pass
+    return None
+
+def _title_dedup_key(title, url=""):
+    """Stable (normalized-title @ host) key so the SAME article saved under two
+    different URLs (pre-redirect vs resolved, tracking variants) dedups. Empty
+    when the title is junk — junk never dedups, it's just rejected."""
+    t = normalize_title(title)
+    if not t or _is_junk_page(title, url):
+        return ""
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+    except Exception:
+        pass
+    return f"{t}@{host}"
+
 TRACKING_PARAMS = {
     'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
     'fbclid','gclid','mc_cid','mc_eid','igshid','_ga','ref','ref_src','ref_url',
     'yclid','msclkid','spm','share','shared','from','source'
 }
+_REDIRECT_URL_CACHE = {}
+_REDIRECT_HOSTS = {
+    "doi.org", "dx.doi.org", "t.co", "bit.ly", "tinyurl.com", "lnkd.in",
+    "l.facebook.com", "lm.facebook.com", "substack.com", "news.google.com",
+    "scholar.google.com", "www.google.com", "google.com", "www.google.com.br",
+    "google.com.br",
+}
+
+def _expand_wrapped_tab_url(url):
+    """Unwrap common mobile/browser redirect URLs before classifying tabs."""
+    if not url:
+        return url
+    try:
+        from urllib.parse import parse_qs, unquote, urlparse
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        qs = parse_qs(p.query, keep_blank_values=False)
+        if host.endswith("google.com") or host.endswith("google.com.br"):
+            for key in ("url", "u", "q"):
+                for raw in qs.get(key, []):
+                    candidate = unquote(raw).strip()
+                    if candidate.startswith(("http://", "https://")):
+                        return candidate
+        if host in {"t.co", "l.facebook.com", "lm.facebook.com"}:
+            for key in ("u", "url"):
+                for raw in qs.get(key, []):
+                    candidate = unquote(raw).strip()
+                    if candidate.startswith(("http://", "https://")):
+                        return candidate
+    except Exception:
+        return url
+    return url
+
+def _looks_like_redirect_url(url):
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower()
+        if host in _REDIRECT_HOSTS:
+            return True
+        if host.endswith(".google.com") or host.endswith(".google.com.br"):
+            return True
+        return any(marker in path for marker in ("/redirect", "/url", "/out", "/link", "/away"))
+    except Exception:
+        return False
+
+def _resolve_terminal_tab_url(url, env=None):
+    """Return the true terminal URL for redirect-like tabs, bounded and cached."""
+    expanded = _expand_wrapped_tab_url(url)
+    env = env or get_env()
+    if not env.get("resolve_terminal_redirects", True):
+        return expanded
+    if not expanded or not _looks_like_redirect_url(expanded):
+        return expanded
+    if expanded in _REDIRECT_URL_CACHE:
+        return _REDIRECT_URL_CACHE[expanded]
+    try:
+        resp = requests.head(expanded, allow_redirects=True, timeout=2.5)
+        final_url = getattr(resp, "url", None) or expanded
+        if final_url == expanded and getattr(resp, "status_code", 0) in (403, 405):
+            resp = _http_get(expanded, timeout=3.5)
+            final_url = getattr(resp, "url", None) or expanded
+        if final_url and final_url.startswith(("http://", "https://")):
+            _REDIRECT_URL_CACHE[expanded] = final_url
+            return final_url
+    except Exception:
+        pass
+    _REDIRECT_URL_CACHE[expanded] = expanded
+    return expanded
 
 def canonicalize_url(url):
     """Collapse common duplicate-URL variants:
@@ -175,6 +345,7 @@ def canonicalize_url(url):
     """
     try:
         from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+        url = _expand_wrapped_tab_url(url)
         p = urlparse(url)
         netloc = (p.netloc or '').lower()
         if netloc.startswith('m.'): netloc = 'www.' + netloc[2:]
@@ -298,11 +469,186 @@ history_lock = threading.Lock()
 def save_history(h):
     with history_lock:
         save_json(HISTORY_FILE(), h)
+
+accountability_lock = threading.Lock()
+
+def _accountability_id(url, item=None):
+    item = item or {}
+    key = canonicalize_url(url or item.get("canonical_url") or item.get("original_url") or "") or url or ""
+    return hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+def _structurally_close_eligible(item):
+    if not item:
+        return False
+    cat_id = (item.get("cat_id") or "").strip().lower()
+    if not cat_id or cat_id == "uncategorized":
+        return False
+    return bool(item.get("z_synced")) and bool(item.get("b_synced"))
+
+def _sync_state(ok):
+    return "confirmed" if ok else "pending_or_failed"
+
+def _url_evidence_candidates(url, item=None):
+    item = item or {}
+    cands = {
+        url,
+        canonicalize_url(url),
+        item.get("canonical_url"),
+        item.get("original_url"),
+    }
+    cands.discard(None)
+    cands.discard("")
+    return {c for c in cands if c}
+
+def _verify_bookmark_evidence(url, item=None):
+    cands = _url_evidence_candidates(url, item)
+    seen = scan_chrome_bookmarks_for_panop()
+    return bool(cands & seen), sorted(cands & seen)
+
+def _scan_local_zotero_evidence():
+    """Read-only local Zotero DB scan. Used only as proof before closing tabs."""
+    profile = os.environ.get("USERPROFILE")
+    if not profile:
+        return {"urls": set(), "dois": set(), "error": "USERPROFILE missing"}
+    db = os.path.join(profile, "Zotero", "zotero.sqlite")
+    if not os.path.exists(db):
+        return {"urls": set(), "dois": set(), "error": "zotero.sqlite not found"}
+    urls, dois = set(), set()
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT f.fieldName, v.value "
+            "FROM itemData d "
+            "JOIN fields f ON f.fieldID=d.fieldID "
+            "JOIN itemDataValues v ON v.valueID=d.valueID "
+            "WHERE lower(f.fieldName) IN ('url','doi')"
+        )
+        for field, value in cur.fetchall():
+            if not value:
+                continue
+            if field.lower() == "url":
+                urls.add(value)
+                urls.add(canonicalize_url(value))
+            elif field.lower() == "doi":
+                dois.add(str(value).lower().replace("https://doi.org/", "").strip())
+        con.close()
+        return {"urls": urls, "dois": dois, "error": None}
+    except Exception as e:
+        return {"urls": urls, "dois": dois, "error": str(e)[:200]}
+
+def _verify_zotero_evidence(url, item=None):
+    item = item or {}
+    # Refresh API cache first when credentials exist. If credentials are absent,
+    # the local DB proof below still protects close decisions.
+    try:
+        refresh_zotero_url_cache()
+    except Exception:
+        pass
+    cands = _url_evidence_candidates(url, item)
+    doi = (item.get("doi") or "").lower().replace("https://doi.org/", "").strip()
+    with _zotero_url_cache_lock:
+        zurls = set(_zotero_url_cache.get("urls") or set())
+        zdois = set(_zotero_url_cache.get("dois") or set())
+    api_matches = sorted(cands & zurls)
+    if api_matches or (doi and doi in zdois):
+        return True, {"source": "zotero_api_cache", "matches": api_matches, "doi_match": bool(doi and doi in zdois)}
+    local = _scan_local_zotero_evidence()
+    local_matches = sorted(cands & local.get("urls", set()))
+    local_dois = local.get("dois", set())
+    if local_matches or (doi and doi in local_dois):
+        return True, {"source": "zotero_local_db", "matches": local_matches, "doi_match": bool(doi and doi in local_dois)}
+    return False, {"source": "zotero_api_cache+local_db", "matches": [], "doi_match": False, "local_error": local.get("error")}
+
+def _verify_close_backups(url, item=None):
+    bookmark_ok, bookmark_matches = _verify_bookmark_evidence(url, item)
+    zotero_ok, zotero_detail = _verify_zotero_evidence(url, item)
+    return {
+        "bookmark_ok": bookmark_ok,
+        "bookmark_matches": bookmark_matches,
+        "zotero_ok": zotero_ok,
+        "zotero": zotero_detail,
+        "ok": bool(bookmark_ok and zotero_ok),
+    }
+
+def _stamp_accountability(item, url, event, source, classification=None, sync=None, close=None):
+    """Embed current provenance/accountability on a history row."""
+    now = datetime.now().isoformat()
+    acc = dict(item.get("_accountability") or {})
+    acc.setdefault("id", _accountability_id(url, item))
+    acc.setdefault("created_at", item.get("date") or now)
+    acc["updated_at"] = now
+    acc["last_event"] = event
+    acc["source"] = source
+    acc["canonical_url"] = item.get("canonical_url") or canonicalize_url(url) or url
+    acc["original_url"] = item.get("original_url")
+    acc["history_url"] = url
+    acc["classification"] = classification or acc.get("classification") or {
+        "cat_id": item.get("cat_id"),
+        "category": item.get("category"),
+        "source": "history_backfill",
+        "confidence": None,
+        "reason": "Existing history row; original classifier evidence was not recorded.",
+    }
+    acc["sync"] = sync or {
+        "zotero": {"status": _sync_state(item.get("z_synced")), "flag": bool(item.get("z_synced"))},
+        "bookmark": {"status": _sync_state(item.get("b_synced")), "flag": bool(item.get("b_synced"))},
+    }
+    acc["safety"] = {
+        "uncategorized_never_close": True,
+        "structurally_close_eligible": _structurally_close_eligible(item),
+        "manual_vetting_required": bool(_manual_vetting_required()),
+        "can_close_now": bool(_safe_to_close(item)),
+    }
+    if close is not None:
+        acc["close"] = close
+    item["_accountability"] = acc
+    return item
+
+def _record_accountability_event(event, url, item=None, **details):
+    item = item or {}
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "event": event,
+        "accountability_id": (item.get("_accountability") or {}).get("id") or _accountability_id(url, item),
+        "url": url,
+        "canonical_url": item.get("canonical_url") or canonicalize_url(url) or url,
+        "title": item.get("title"),
+        "cat_id": item.get("cat_id"),
+        "category": item.get("category"),
+        "z_synced": bool(item.get("z_synced")),
+        "b_synced": bool(item.get("b_synced")),
+        "details": details,
+    }
+    try:
+        path = ACCOUNTABILITY_FILE()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with accountability_lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return entry
+
 def load_profiles(): return load_json(LEARNING_FILE(), {})
 def save_profiles(p): save_json(LEARNING_FILE(), p)
 
+STOP_WORDS = {
+    "about", "above", "after", "again", "against", "along", "already", "also", "although", "among",
+    "around", "because", "been", "before", "being", "below", "between", "both", "could", "didnt",
+    "does", "doing", "dont", "down", "during", "each", "either", "even", "every", "first", "from",
+    "further", "great", "have", "here", "hers", "herself", "himself", "html", "http", "https",
+    "into", "itself", "just", "like", "many", "more", "most", "much", "must", "myself", "neither",
+    "never", "obtained", "once", "only", "other", "others", "ours", "ourselves", "over", "same",
+    "should", "since", "some", "still", "such", "than", "that", "their", "them", "themselves",
+    "then", "there", "these", "they", "this", "those", "through", "today", "under", "until",
+    "upon", "very", "wasnt", "were", "what", "when", "where", "which", "while", "whoever",
+    "whom", "whose", "why", "with", "within", "without", "would", "yours", "yourself", "yourselves"
+}
+
 def get_words(text):
-    return [w for w in "".join([c if c.isalnum() else " " for c in text.lower()]).split() if len(w) > 3]
+    return [w for w in "".join([c if c.isalnum() else " " for c in text.lower()]).split() if len(w) > 3 and w not in STOP_WORDS]
 
 def update_ai_profile(category_id, text):
     profiles = load_profiles()
@@ -314,7 +660,25 @@ def update_ai_profile(category_id, text):
 def get_ai_prediction(text):
     profiles = load_profiles()
     if not profiles: return None
+    
+    lower_text = text.lower()
+    ban_words = [
+        "wikipedia", "amazon", "github", "medium.com", "bbc.com", 
+        "reddit.com", "twitter.com", "linkedin.com", "youtube.com", 
+        "netflix.com", "stackoverflow.com", "superuser.com", "hacker news"
+    ]
+    for ban in ban_words:
+        if ban in lower_text:
+            return None
+            
     words = get_words(text)
+    if not words: return None
+    
+    academic_indicators = {"arxiv", "arxivlabs", "doi", "journal", "citation", "citations", "pmid", "abstract", "author", "authors", "volume", "issue", "published", "press", "university"}
+    inds = sum(1 for w in words if w in academic_indicators)
+    if inds < 3:
+        return None
+        
     scores = {}
     for cat_id, profile in profiles.items():
         score = sum(profile.get(w, 0) for w in words)
@@ -386,6 +750,111 @@ def fetch_page_content(url):
     except Exception:
         return None
 
+def _extract_primary_links(url, max_links=50):
+    """Science-News 2nd stage, part 1: for a DIGEST / roundup / index page,
+    return the candidate primary-article links [{url, title}] it points to —
+    outbound anchors whose text reads like a headline and whose URL looks like
+    an article. Bruno 2026-06-14: Science News aggregators must explode into
+    their contained articles/books, which then get classified + saved to the
+    right destinations (not the digest page itself)."""
+    try:
+        resp = _http_get(url, timeout=12)
+        if resp is None or getattr(resp, "status_code", 0) != 200:
+            return []
+        soup = BeautifulSoup((resp.text or "")[:600_000], "html.parser")
+    except Exception:
+        return []
+    from urllib.parse import urljoin, urlparse
+    _SKIP = ("/tag/", "/tags/", "/category", "/categories", "/author/", "/about",
+             "/subscribe", "/login", "/signin", "/sign-in", "/register", "/privacy",
+             "/terms", "/contact", "/feed", "/rss", "mailto:", "/search", "/account",
+             "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com",
+             "youtube.com", "/page/", "/comments", "#", "/donate", "/newsletter")
+    seen, out = set(), []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(url, a["href"])
+        p = urlparse(href)
+        if p.scheme not in ("http", "https"):
+            continue
+        anchor = a.get_text(" ", strip=True)
+        if len(anchor) < 25:                       # headlines are substantial
+            continue
+        low = href.lower()
+        if any(s in low for s in _SKIP):
+            continue
+        path = (p.path or "").strip("/")
+        last = path.split("/")[-1] if path else ""
+        # article-like: nested path OR a hyphenated slug (substack/news style)
+        if path.count("/") < 1 and "-" not in last:
+            continue
+        key = canonicalize_url(href)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"url": href, "title": anchor[:200]})
+        if len(out) >= max_links:
+            break
+    return out
+
+
+def is_science_news_aggregator(url, metadata=None):
+    """Detect a digest/roundup/index whose value is the links it contains.
+    A page qualifies if it surfaces several distinct primary-article links."""
+    links = _extract_primary_links(url, max_links=12)
+    return len(links) >= 5, links
+
+
+def second_stage_extract(agg_url, env=None, categories=None, history=None):
+    """Science-News 2nd stage, part 2: fetch the aggregator, extract its primary
+    links, classify EACH, and save it to its own destination (Articles/Books/
+    Science News + bookmark) stamping `extracted_from` provenance. Returns a
+    summary.
+
+    `history`: when the caller already holds the in-memory history dict (the
+    sweep/drain does), pass it so children are written into the SAME dict and
+    the caller persists once — otherwise we'd load a fresh copy, save it, and
+    the caller's later save_history() would clobber the children (the classic
+    stale-history bug). When None we load+save our own (standalone/retro use)."""
+    env = env or get_env()
+    categories = categories or (load_config() or {}).get("categories", [])
+    links = _extract_primary_links(agg_url)
+    res = {"aggregator": agg_url, "found": len(links), "saved": 0,
+           "by_cat": {}, "items": []}
+    own = history is None
+    h = load_history() if own else history
+    for ln in links:
+        link_url = ln["url"]
+        meta = fetch_page_content(link_url) or {}
+        if not meta.get("title"):
+            meta["title"] = ln["title"]
+        cat = _classify_tab_candidate(link_url, meta, categories, env)
+        if not cat or cat.get("id") in (None, "", "uncategorized"):
+            continue
+        term = _resolve_terminal_tab_url(link_url, env)
+        storage_url = canonicalize_url(term) or term or link_url
+        if storage_url in h:                       # already have it
+            continue
+        title = meta.get("title") or ln["title"]
+        doi = meta.get("doi")
+        z = send_to_zotero(storage_url, title, meta.get("abstract", ""), cat["name"], doi=doi)
+        b = add_chrome_bookmark(storage_url, title, cat["name"])
+        h[storage_url] = {
+            "title": title, "category": cat["name"], "cat_id": cat["id"],
+            "date": datetime.now().isoformat(), "abstract": meta.get("abstract", ""),
+            "canonical_url": meta.get("canonical_url", storage_url),
+            "doi": doi, "extracted_from": agg_url,
+            "z_synced": z, "b_synced": b, "ai_learned": False,
+        }
+        _stamp_accountability(h[storage_url], storage_url, "second_stage_extract",
+                              f"aggregator:{agg_url}")
+        res["by_cat"][cat["id"]] = res["by_cat"].get(cat["id"], 0) + 1
+        res["saved"] += 1
+        res["items"].append({"url": storage_url, "category": cat["id"], "z": z, "b": b})
+    if res["saved"] and own:
+        save_history(h)
+    return res
+
+
 def get_pdf_title(url, tab_title=""):
     """Best-effort title resolution for PDF URLs.
     1. Use DevTools tab title if Chrome already resolved it.
@@ -440,6 +909,8 @@ def is_chrome_running():
     return False
 
 def PENDING_BOOKMARKS_FILE(): return os.path.join(OUTPUT_DIR(), "panop_pending_bookmarks.json")
+def CLOSE_AUDIT_FILE(): return os.path.join(OUTPUT_DIR(), "panop_close_audit.jsonl")
+def ACCOUNTABILITY_FILE(): return os.path.join(OUTPUT_DIR(), "panop_accountability.jsonl")
 
 bookmarks_lock = threading.RLock()
 
@@ -532,6 +1003,122 @@ def _write_bookmark_now(url, title, category_name):
     except Exception:
         return False
 
+# ── batch bookmark writing ──────────────────────────────────────────────────
+# Per-item _write_bookmark_now rewrites the whole ~100MB Bookmarks file each
+# call (~9.5s with Chrome closed). During a sweep we buffer every direct write
+# and flush them all in ONE read+write. Mirror of the Zotero batch. Bruno
+# 2026-06-20 ("batch save to zotero AND bookmarks").
+_bookmark_batch_mode = False
+_bookmark_batch_buffer = []          # list of (url, title, category_name)
+_bookmark_batch_lock = threading.RLock()
+
+# Memo for scan_chrome_bookmarks_for_panop — keyed by Bookmarks-file mtime so it
+# re-parses the ~100MB file only when it actually changes (the per-tab close
+# verification called it once per tab → minutes of redundant parsing).
+_bk_scan_memo = {"mtime": 0, "data": set()}
+_bk_scan_memo_lock = threading.RLock()
+
+def _begin_bookmark_batch():
+    global _bookmark_batch_mode, _bookmark_batch_buffer
+    with _bookmark_batch_lock:
+        _bookmark_batch_mode = True
+        _bookmark_batch_buffer = []
+
+def _flush_bookmark_batch():
+    """Write every buffered bookmark to the Chrome Bookmarks file in ONE pass.
+    Returns the set of urls actually written. Disables batch mode."""
+    global _bookmark_batch_mode, _bookmark_batch_buffer
+    with _bookmark_batch_lock:
+        items = list(_bookmark_batch_buffer)
+        _bookmark_batch_buffer = []
+        _bookmark_batch_mode = False
+    if not items:
+        return set()
+    return _write_bookmarks_bulk(items)
+
+def _write_bookmarks_bulk(items):
+    """Insert MANY bookmarks with a SINGLE file read+write (amortises the
+    ~100MB rewrite across all items). items: iterable of (url, title,
+    category_name). Returns the set of urls present after the write. ONLY safe
+    when Chrome is not running. Mirrors _write_bookmark_now's folder logic."""
+    env = get_env()
+    profile_name = env.get("chrome_profile", "Default") or "Default"
+    profile = os.environ.get("USERPROFILE")
+    if not profile: return set()
+    udir = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", profile_name)
+    book_path = os.path.join(udir, "Bookmarks")
+    if not os.path.exists(book_path): return set()
+    try:
+        with open(book_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        other = data.setdefault("roots", {}).setdefault("other", {})
+        other.setdefault("children", [])
+        panop_folder_name = env.get("bookmark_folder", "Panop") or "Panop"
+
+        def _stamp(): return str(int(time.time() * 1000000))
+
+        panop_folder = next(
+            (c for c in other["children"]
+             if c.get("type") == "folder" and c.get("name", "") == panop_folder_name),
+            None)
+        if not panop_folder:
+            panop_folder = {"children": [], "date_added": _stamp(), "date_last_used": "0",
+                            "guid": _new_guid(), "name": panop_folder_name, "type": "folder"}
+            other["children"].append(panop_folder)
+        elif not panop_folder.get("guid"):
+            panop_folder["guid"] = _new_guid()
+
+        # Resolve (and create) each category folder ONCE, cached by name.
+        _cat_cache = {}
+        def _cat_folder(category_name):
+            key = (category_name or "").lower()
+            f = _cat_cache.get(key)
+            if f is not None: return f
+            f = next((c for c in panop_folder["children"]
+                      if c.get("type") == "folder" and c.get("name", "").lower() == key), None)
+            if not f:
+                f = {"children": [], "date_added": _stamp(), "date_last_used": "0",
+                     "guid": _new_guid(), "name": category_name, "type": "folder"}
+                panop_folder["children"].append(f)
+            elif not f.get("guid"):
+                f["guid"] = _new_guid()
+            _cat_cache[key] = f
+            return f
+
+        written = set()
+        for url, title, category_name in items:
+            try:
+                cat_folder = _cat_folder(category_name)
+                cat_folder.setdefault("children", [])
+                existing = next((c for c in cat_folder["children"]
+                                 if c.get("url") == url), None)
+                if existing:
+                    cur = (existing.get("name") or "").strip()
+                    new = (title or "").strip()
+                    if new and new.lower() not in _GENERIC_TITLES and (
+                        cur.lower() in _GENERIC_TITLES or len(new) > len(cur) + 3):
+                        existing["name"] = new
+                else:
+                    cat_folder["children"].append({
+                        "date_added": _stamp(), "date_last_used": "0", "guid": _new_guid(),
+                        "name": title or url, "type": "url", "url": url})
+                written.add(url)
+            except Exception:
+                continue
+
+        data.pop("checksum", None)
+        tmp = book_path + ".panop.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, book_path)
+        bak = book_path + ".bak"
+        if os.path.exists(bak):
+            try: os.remove(bak)
+            except Exception: pass
+        return written
+    except Exception:
+        return set()
+
 def scan_chrome_bookmarks_for_panop():
     """Walks the user's Chrome Bookmarks file and returns every URL present
     inside the Panop folder tree under 'Outros favoritos'. Used to flip
@@ -546,6 +1133,17 @@ def scan_chrome_bookmarks_for_panop():
     if not profile: return set()
     book_path = os.path.join(profile, "AppData", "Local", "Google", "Chrome", "User Data", profile_name, "Bookmarks")
     if not os.path.exists(book_path): return set()
+    # mtime-keyed memo: parse the ~100MB file only when it changed. The per-tab
+    # close verification calls this once per tab — without this it re-parsed 100MB
+    # for every tab and the close pass took tens of minutes.
+    try:
+        _mt = os.path.getmtime(book_path)
+    except OSError:
+        _mt = 0
+    if _mt:
+        with _bk_scan_memo_lock:
+            if _bk_scan_memo["mtime"] == _mt:
+                return _bk_scan_memo["data"]
     try:
         with open(book_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -566,6 +1164,10 @@ def scan_chrome_bookmarks_for_panop():
         for ch in node.get("children") or []:
             walk(ch)
     walk(panop)
+    if _mt:
+        with _bk_scan_memo_lock:
+            _bk_scan_memo["mtime"] = _mt
+            _bk_scan_memo["data"] = urls
     return urls
 
 def reconcile_all():
@@ -607,22 +1209,38 @@ def reconcile_all():
 
 def add_chrome_bookmark(url, title, category_name):
     """Public entry point used by the sweep / drain.
-    Always returns True if the bookmark is at least queued — the Chrome
-    extension polls /api/v1/bookmarks/pending every 30s and writes them live,
-    then ACKs back to flip b_synced. Returning True lets the close-tab
-    condition fire immediately, which is what the user expects: 'I saved it,
-    close the tab.' The extension will reconcile state moments later.
+    Returns True only when the bookmark is known to exist. If Chrome is
+    running, queue it for the extension and keep b_synced=false until ACK or
+    reconciliation proves Chrome actually has the bookmark.
     """
+    # QUALITY GATE — mirror of the Zotero gate; never bookmark a block/error
+    # page or a contentless extraction. Bruno 2026-06-14.
+    junk = _is_junk_page(title, url)
+    if junk:
+        try:
+            _record_accountability_event("save_blocked_junk", url,
+                                         {"title": title}, target="bookmark", reason=junk)
+        except Exception:
+            pass
+        return False
     with bookmarks_lock:
         if is_chrome_running():
             _queue_bookmark(url, title, category_name)
-            return True   # optimistic — extension will pick it up
+            return False
+    # Chrome not running — direct write. If a sweep has opened a bookmark batch,
+    # buffer this write so the ~100MB Bookmarks file is rewritten ONCE at flush
+    # instead of per-item. Return False (honest: not yet persisted); the sweep
+    # flips b_synced=true only for urls the flush actually wrote.
+    with _bookmark_batch_lock:
+        if _bookmark_batch_mode:
+            _bookmark_batch_buffer.append((url, title, category_name))
+            return False
     ok = _write_bookmark_now(url, title, category_name)
     if not ok:
         # Direct write failed; fall back to queueing for the extension.
         with bookmarks_lock:
             _queue_bookmark(url, title, category_name)
-        return True
+        return False
     return True
 
 
@@ -633,7 +1251,11 @@ def ZOTERO_URL_CACHE_FILE(): return os.path.join(OUTPUT_DIR(), "panop_zotero_url
 
 _zotero_url_cache_lock = threading.Lock()
 # by_url / by_doi → {"key": str, "version": int} so we can PATCH existing items.
-_zotero_url_cache = {"urls": set(), "dois": set(), "by_url": {}, "by_doi": {}, "ts": 0}
+_zotero_url_cache = {"urls": set(), "dois": set(), "by_url": {}, "by_doi": {},
+                     "titlekeys": set(), "by_titlekey": {}, "ts": 0}
+ZOTERO_CACHE_TTL_S = 180   # within a close pass refresh is called per-tab; one
+                           # fresh API walk serves them all (re-walking the
+                           # throttled API per tab hung the whole pass).
 
 def _load_zotero_url_cache():
     data = load_json(ZOTERO_URL_CACHE_FILE(), {"urls": [], "dois": [], "by_url": {}, "by_doi": {}, "ts": 0})
@@ -641,6 +1263,8 @@ def _load_zotero_url_cache():
     _zotero_url_cache["dois"] = set((d or "").lower() for d in data.get("dois", []) if d)
     _zotero_url_cache["by_url"] = dict(data.get("by_url", {}))
     _zotero_url_cache["by_doi"] = dict(data.get("by_doi", {}))
+    _zotero_url_cache["titlekeys"] = set(data.get("titlekeys", []))
+    _zotero_url_cache["by_titlekey"] = dict(data.get("by_titlekey", {}))
     _zotero_url_cache["ts"] = data.get("ts", 0)
 
 def _save_zotero_url_cache():
@@ -649,6 +1273,8 @@ def _save_zotero_url_cache():
         "dois": sorted(_zotero_url_cache["dois"]),
         "by_url": _zotero_url_cache["by_url"],
         "by_doi": _zotero_url_cache["by_doi"],
+        "titlekeys": sorted(_zotero_url_cache["titlekeys"]),
+        "by_titlekey": _zotero_url_cache["by_titlekey"],
         "ts": int(time.time()),
     })
 
@@ -660,6 +1286,10 @@ def refresh_zotero_url_cache():
     env = get_env()
     if not env.get("zotero_api_key", "").strip() or not env.get("zotero_user_id", "").strip():
         return 0
+    # TTL guard (lock-free read): skip the full API walk when the cache is still
+    # fresh. Lets the per-tab close-verification reuse one walk for the whole pass.
+    if time.time() - _zotero_url_cache.get("ts", 0) < ZOTERO_CACHE_TTL_S:
+        return len(_zotero_url_cache.get("urls") or ())
     with _zotero_url_cache_lock:
         try:
             parent_name = env.get("bookmark_folder", "Panop") or "Panop"
@@ -675,6 +1305,7 @@ def refresh_zotero_url_cache():
                 col_keys += [c["key"] for c in r.json()]
             urls, dois = set(), set()
             by_url, by_doi = {}, {}
+            titlekeys, by_titlekey = set(), {}
             for ck in col_keys:
                 start = 0
                 while True:
@@ -700,12 +1331,18 @@ def refresh_zotero_url_cache():
                             dl = m.group(0).lower()
                             dois.add(dl)
                             by_doi[dl] = {"key": key, "version": ver}
+                        tk = _title_dedup_key(d.get("title"), u or "")
+                        if tk and key:
+                            titlekeys.add(tk)
+                            by_titlekey.setdefault(tk, {"key": key, "version": ver})
                     if len(items) < 100: break
                     start += len(items)
             _zotero_url_cache["urls"] = urls
             _zotero_url_cache["dois"] = dois
             _zotero_url_cache["by_url"] = by_url
             _zotero_url_cache["by_doi"] = by_doi
+            _zotero_url_cache["titlekeys"] = titlekeys
+            _zotero_url_cache["by_titlekey"] = by_titlekey
             _zotero_url_cache["ts"] = int(time.time())
             _save_zotero_url_cache()
             return len(urls)
@@ -832,10 +1469,29 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
     DEDUP: checks the cached set of URLs/DOIs already in the Panop tree
     before POSTing. If already present, returns True without calling the API.
     """
+    # Bookmark-only categories (data_tools / references / shopping / opportunities
+    # / curios / study_work / content_longform) skip Zotero entirely — they save
+    # to their bookmark folder only. Bruno 2026-06-15. Articles/Books/Science News
+    # still go to Zotero.
+    try:
+        for _c in (load_config() or {}).get("categories", []):
+            if _c.get("name") == category_name and _c.get("route") == "bookmark":
+                return False
+    except Exception:
+        pass
     env = get_env()
     api_key = env.get("zotero_api_key", "").strip()
     user_id = env.get("zotero_user_id", "").strip()
     if not api_key or not user_id:
+        return False
+    # QUALITY GATE — never save a block page / error / contentless extraction.
+    junk = _is_junk_page(title, url, abstract)
+    if junk:
+        try:
+            _record_accountability_event("save_blocked_junk", url,
+                                         {"title": title}, target="zotero", reason=junk)
+        except Exception:
+            pass
         return False
     try:
         # Dedup short-circuit — if we already have this item in Zotero,
@@ -845,20 +1501,24 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
             doi_set = set(_zotero_url_cache["dois"])
             by_url = dict(_zotero_url_cache["by_url"])
             by_doi = dict(_zotero_url_cache["by_doi"])
+            titlekey_set = set(_zotero_url_cache["titlekeys"])
+            by_titlekey = dict(_zotero_url_cache["by_titlekey"])
         canon = canonicalize_url(url)
+        tkey = _title_dedup_key(title, canon or url)
         hit = None
         if url in url_set:         hit = by_url.get(url)
         elif canon in url_set:     hit = by_url.get(canon)
         elif doi and doi.lower() in doi_set: hit = by_doi.get(doi.lower())
+        # Same article under a different URL (pre-redirect vs resolved, tracking
+        # variants) — catch it by normalized title+host. THIS is what stops the
+        # duplicate explosion the URL-only dedup let through. Bruno 2026-06-14.
+        elif tkey and tkey in titlekey_set: hit = by_titlekey.get(tkey)
         if hit and hit.get("key"):
-            try:
-                _patch_zotero_item_if_richer(
-                    hit["key"],
-                    incoming_title=title, incoming_abstract=abstract,
-                    incoming_doi=doi, incoming_tag=category_name
-                )
-            except Exception:
-                pass
+            # Already in Zotero — return immediately. The old per-dup "upgrade"
+            # PATCH was a network call for EVERY duplicate; during a sweep of a
+            # mostly-already-saved tab set that is hundreds of (rate-limited)
+            # requests for marginal benefit, and was the sweep's real bottleneck.
+            # Field enrichment is the separate enrich pass's job. Bruno 2026-06-19.
             return True
 
         parent_folder_name = env.get("bookmark_folder", "Panop") or "Panop"
@@ -900,22 +1560,38 @@ def send_to_zotero(url, title, abstract, category_name, doi=None):
                     dl = doi.lower()
                     _zotero_url_cache["dois"].add(dl)
                     if ref: _zotero_url_cache["by_doi"][dl] = ref
+                if tkey:
+                    _zotero_url_cache["titlekeys"].add(tkey)
+                    if ref: _zotero_url_cache["by_titlekey"].setdefault(tkey, ref)
         return ok
     except Exception:
         return False
 
 def _adb_list_devices(adb_exe):
     """Returns (ready_devices, unauthorized_devices, offline_devices) lists of ids.
-    Always runs `adb start-server` first so a stale/killed server is revived.
+
+    Bruno 2026-05-27 — DO NOT run `adb start-server` on every call. When the
+    daemon is down, adb forks its server process, and adb's *internal* daemon
+    spawn shows a console window that our Popen CREATE_NO_WINDOW patch CANNOT
+    suppress (it's adb.exe doing the spawning, not us). This function is polled
+    every 6 s by the watchdog loop, so the unconditional start-server was
+    flashing a shell window ~every second (worse with duplicate Panop
+    instances). Fix: call `adb devices` directly — it connects to the existing
+    daemon silently; only if that fails do we start the server ONCE and retry.
+    The startup hook starts the daemon once at boot (hidden), so steady state
+    never re-forks it.
     """
+    def _devices():
+        return subprocess.run([adb_exe, "devices"], capture_output=True,
+                              text=True, timeout=15)
     try:
-        subprocess.run([adb_exe, "start-server"], capture_output=True, timeout=15)
+        r = _devices()
     except Exception:
-        pass
-    try:
-        r = subprocess.run([adb_exe, "devices"], capture_output=True, text=True, timeout=15)
-    except Exception:
-        return [], [], []
+        try:
+            subprocess.run([adb_exe, "start-server"], capture_output=True, timeout=15)
+            r = _devices()
+        except Exception:
+            return [], [], []
     ready, unauth, offline = [], [], []
     for line in (r.stdout or "").splitlines():
         line = line.strip()
@@ -928,6 +1604,78 @@ def _adb_list_devices(adb_exe):
         elif state == "unauthorized": unauth.append(did)
         elif state == "offline":      offline.append(did)
     return ready, unauth, offline
+
+def _zotero_in_cache(storage_url, doi=None, title=None):
+    """Fast dedup against the in-memory Zotero cache (no API). Same logic the
+    per-item send_to_zotero used — needed because batch-save defers the POST."""
+    with _zotero_url_cache_lock:
+        urls = set(_zotero_url_cache.get("urls") or [])
+        dois = set(_zotero_url_cache.get("dois") or [])
+        tks = set(_zotero_url_cache.get("titlekeys") or [])
+    c = canonicalize_url(storage_url)
+    if storage_url in urls or (c and c in urls):
+        return True
+    if doi and doi.lower() in dois:
+        return True
+    tk = _title_dedup_key(title, c or storage_url)
+    return bool(tk and tk in tks)
+
+
+def _batch_zotero_post(items, env):
+    """BATCH-create new Zotero items, 50 per POST instead of one call each — the
+    fix for serial saves crawling under Zotero rate-limiting. items: list of
+    {storage_url, title, abstract, category_name, doi}. Returns {storage_url: ok}.
+    Updates the in-memory cache so the new items dedup next time. Bruno 2026-06-19."""
+    out = {}
+    if not items:
+        return out
+    api_key = env.get("zotero_api_key", "").strip()
+    user_id = env.get("zotero_user_id", "").strip()
+    if not api_key or not user_id:
+        return {it["storage_url"]: False for it in items}
+    parent = env.get("zotero_collection_key", "").strip() or \
+        _get_or_create_collection(env.get("bookmark_folder", "KMS Output") or "KMS Output")
+    catkeys = {}
+    for it in items:
+        cn = it["category_name"]
+        if cn not in catkeys:
+            catkeys[cn] = (_get_or_create_collection(cn, parent_key=parent) if parent else None)
+    for i in range(0, len(items), 50):
+        chunk = items[i:i + 50]
+        payload = []
+        for it in chunk:
+            ck = catkeys.get(it["category_name"]) or parent
+            d = {"itemType": "webpage", "title": (it["title"] or "Untitled")[:250],
+                 "url": it["storage_url"], "abstractNote": it.get("abstract") or "",
+                 "date": datetime.now().strftime("%Y-%m-%d"),
+                 "tags": [{"tag": it["category_name"]}] if it["category_name"] else [],
+                 "collections": [ck] if ck else []}
+            if it.get("doi"):
+                d["extra"] = f"DOI: {it['doi']}"
+            payload.append(d)
+        succ = {}
+        try:
+            r = requests.post(f"{_zotero_base()}/items", headers=_zotero_headers(),
+                              json=payload, timeout=60)
+            if r.status_code in (200, 201) and r.content:
+                succ = r.json().get("successful") or {}
+        except Exception:
+            succ = {}
+        with _zotero_url_cache_lock:
+            for j, it in enumerate(chunk):
+                created = succ.get(str(j))
+                ok = bool(created)
+                out[it["storage_url"]] = ok
+                if ok:
+                    su = it["storage_url"]
+                    _zotero_url_cache["urls"].add(su)
+                    nk = (created or {}).get("key") or ((created or {}).get("data") or {}).get("key")
+                    nv = (created or {}).get("version") or ((created or {}).get("data") or {}).get("version")
+                    if nk:
+                        _zotero_url_cache["by_url"][su] = {"key": nk, "version": nv}
+        time.sleep(0.2)
+    return out
+
 
 def run_adb_sweep():
     global sweep_status
@@ -1046,41 +1794,83 @@ def run_adb_sweep():
 
         # ── PHASE 1: Pure string matching (no network, instant) ──────────────
         # Build list of (tab, cat, needs_body_fetch) for candidates only
+        import time as _t
+        _dbgf = os.path.join(OUTPUT_DIR(), "sweep_debug.log")
+        def _dbg(m):
+            try:
+                with open(_dbgf, "a", encoding="utf-8") as _f:
+                    _f.write(f"{_t.strftime('%H:%M:%S')} {m}\n")
+            except Exception:
+                pass
+        _dbg(f"=== PHASE1 start: {len(tabs)} tabs ===")
         candidates = []  # (tab, matched_cat_no_body_check, needs_fetch)
-        for tab in tabs:
+        for _idx, tab in enumerate(tabs):
+            if _idx % 50 == 0:
+                _dbg(f"P1 {_idx}/{len(tabs)} cands={len(candidates)} url={(tab.get('url') or '')[:90]}")
             url = tab.get("url", "")
-            if not url or url.startswith("chrome://") or url in history:
+            true_url = _resolve_terminal_tab_url(url, env)
+            storage_probe = canonicalize_url(true_url) or true_url
+            if not url or url.startswith("chrome://") or url in history or storage_probe in history:
                 continue
             sweep_status["tabs_new"] += 1
-            url_lower = url.lower()
+            url_lower = true_url.lower()
             is_pdf = url_lower.endswith(".pdf")
 
+            # Check never_academic list to skip unnecessary fetches
+            try:
+                import lib.classifier as classifier
+                res = classifier.classify(true_url, None)
+                if res.layer == "domain_tier" and res.action == "abstain":
+                    reason = (res.evidence or {}).get("reason", "")
+                    if isinstance(reason, str) and reason.startswith("never_academic:"):
+                        continue
+            except Exception:
+                pass
+
+            _RESTRICT = _restricted_cat_ids()
             domain_matched_cat = None
             needs_fetch = False
 
-            for cat in categories:
-                domains = cat.get("domain_keywords", [])
-                body_req = cat.get("body_required", [])
-                body_forb = cat.get("body_forbidden", [])
-                tab_group = cat.get("tab_group", "")
+            # Classify by URL ALONE (object-type / domain / paper-path / academic
+            # host rules — no page fetch). A confident URL match needs NO body
+            # fetch: that is the speed win (1600 discarded tabs were each being
+            # reactivated+fetched). Bruno 2026-06-18 / 3-phase rewrite.
+            try:
+                import lib.classifier as classifier
+                res = classifier.classify(true_url, None)
+                if res.action == "match" and res.category:
+                    matched = next((c for c in categories if c.get("id") == res.category), None)
+                    if matched:
+                        domain_matched_cat = matched
+                        needs_fetch = False          # URL-confident → skip fetch
+            except Exception:
+                pass
 
-                if tab_group and tab_group.lower() not in str(tab).lower():
-                    continue
+            # ACTIVE RESTRICTION (e.g. Articles/Books/Science News only): drop
+            # everything else HERE — before the expensive pool — so non-allowed
+            # tabs are never fetched, never saved, and stay OPEN on the phone.
+            if _RESTRICT:
+                cid = (domain_matched_cat or {}).get("id", "").lower()
+                if cid in _RESTRICT and domain_matched_cat:
+                    candidates.append((tab, domain_matched_cat, needs_fetch))
+                else:
+                    sweep_status["skipped_restricted"] = sweep_status.get("skipped_restricted", 0) + 1
+                continue
 
-                domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
-
-                if not domain_match and strict and domains:
-                    continue  # strict mode: skip if no domain match
-
-                if domain_match or not domains:
-                    # If no body keywords needed, match immediately
-                    if not body_req and not body_forb and not is_pdf:
+            # Unrestricted: fall back to domain-keyword rules (fetch only if the
+            # URL classifier didn't already match).
+            if not domain_matched_cat:
+                for cat in categories:
+                    domains = cat.get("domain_keywords", [])
+                    tab_group = cat.get("tab_group", "")
+                    if tab_group and tab_group.lower() not in str(tab).lower():
+                        continue
+                    domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+                    if not domain_match and strict and domains:
+                        continue
+                    if domain_match or not domains:
                         domain_matched_cat = cat
-                        needs_fetch = False  # still fetch for title/abstract
-                        break
-                    elif not is_pdf:
-                        domain_matched_cat = cat
-                        needs_fetch = True
+                        needs_fetch = True       # keyword-only guess → verify by body
                         break
 
             if domain_matched_cat:
@@ -1093,66 +1883,80 @@ def run_adb_sweep():
 
         # ── PHASE 2: Parallel page fetches for candidates ────────────────────
         def process_tab(tab, cat, needs_fetch):
-            """Worker: fetch page if needed, run body keyword check, return result or None.
-            Key rule: if fetch FAILS (timeout/network error) but the URL domain-matched,
-            we still include the tab — trust the domain. Only exclude when page loads
-            successfully and keywords are provably absent.
-            """
+            """Worker: fetch page if needed, run smart classification, return result or None."""
             url = tab.get("url", "")
-            url_lower = url.lower()
+            terminal_url = _resolve_terminal_tab_url(url, env)
+            url_lower = terminal_url.lower()
             is_pdf = url_lower.endswith(".pdf")
-            body_req = cat.get("body_required", [])
-            body_req_mode = cat.get("body_required_mode", "ALL")
-            body_forb = cat.get("body_forbidden", [])
-            domains = cat.get("domain_keywords", [])
-            domain_matched = any(d.lower() in url_lower for d in domains if d) if domains else True
 
             metadata = None
             if needs_fetch and not is_pdf:
-                metadata = fetch_page_content(url)  # returns None on failure
+                metadata = fetch_page_content(terminal_url)  # returns None on failure
 
-            fetch_failed = metadata is None
-            text = (metadata or {}).get("text", "")
-
-            if fetch_failed:
-                # Fetch timed out / network error.
-                # If domain clearly matched → trust it and include.
-                # If no domain list (open category) → skip (too risky without body check).
-                if domain_matched and domains:
-                    req_match = True
-                    forb_match = False
-                else:
-                    return None
+            if not needs_fetch and cat:
+                # URL-confident classification from Phase 1 — no body needed (the
+                # speed path: trust the object-type/domain/paper-path match).
+                matched_category = cat
             else:
-                # Page loaded — apply body keyword rules strictly
-                if body_req_mode == "ANY":
-                    req_match = any(kw.lower() in text for kw in body_req if kw) if body_req else True
-                else:
-                    req_match = all(kw.lower() in text for kw in body_req if kw) if body_req else True
-                forb_match = any(kw.lower() in text for kw in body_forb if kw) if body_forb else False
-
-            if not req_match or forb_match:
-                return None
+                matched_category = _classify_tab_candidate(terminal_url, metadata, categories, env)
+                if not matched_category:
+                    if catch_uncat:
+                        matched_category = next((c for c in categories if c.get("id") == "uncategorized"), None)
+                        if not matched_category:
+                            matched_category = {"name": "Uncategorized", "id": "uncategorized", "dest_folder": os.path.join(OUTPUT_DIR(), "Uncategorized")}
+                    else:
+                        return None
 
             # Title: prefer page metadata, fall back to PDF-aware resolution, then DevTools title
             if is_pdf:
-                title = get_pdf_title(url, tab.get("title", ""))
+                title = get_pdf_title(terminal_url, tab.get("title", ""))
             else:
                 title = (metadata or {}).get("title") or tab.get("title", "") or "Untitled"
-            return (url, cat, title, metadata or {}, tab.get("id"))
+            return (terminal_url, matched_category, title, metadata or {}, tab.get("id"))
+
+        # Pre-warm the Zotero dedup cache ONCE before the pool. LOAD the persisted
+        # cache (instant) rather than walk the whole ~10k-item tree live — that walk
+        # is throttle-prone and was the real hang (Zotero rate-limits a heavily-used
+        # key). The sweep already dedups against LOCAL history (above); this is the
+        # secondary guard. A fresh full walk runs separately, off the hot path.
+        _dbg(f"=== PHASE1 done: {len(candidates)} candidates; loading zotero cache ===")
+        try:
+            _load_zotero_url_cache()
+            _dbg(f"zotero cache loaded: {len(_zotero_url_cache.get('urls') or [])} urls")
+        except Exception as _e:
+            _dbg(f"cache load error: {type(_e).__name__}")
+        _dbg("=== PHASE2 start: saving ===")
 
         # Run up to 8 tabs in parallel — enough throughput without hammering RAM/CPU
         WORKERS = 8
+        _done_ctr = [0]
+        _zbatch = []   # net-new items, BATCH-posted to Zotero after the loop
+        _scinews_urls = []   # science_news digests -> 2nd-stage exploded AFTER the loop
+        # Open a bookmark batch: every direct write (main loop AND 2nd stage) is
+        # buffered and flushed in ONE ~100MB file rewrite after both finish.
+        _begin_bookmark_batch()
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = {pool.submit(process_tab, tab, cat, needs_fetch): (tab, cat)
                        for tab, cat, needs_fetch in candidates}
 
             for future in as_completed(futures):
+                _done_ctr[0] += 1
+                if _done_ctr[0] <= 5 or _done_ctr[0] % 25 == 0:
+                    _dbg(f"P2 {_done_ctr[0]}/{len(candidates)} matched={sweep_status.get('tabs_matched')}")
                 try:
                     result = future.result()
                     if result is None:
                         continue
                     url, matched_category, title, metadata, tab_id = result
+
+                    # ACTIVE RESTRICTION (Bruno 2026-06-18): when the routine is
+                    # limited to certain categories (e.g. Articles/Books/Science
+                    # News only), skip everything else entirely — don't save, and
+                    # the tab stays OPEN on the phone (never closed).
+                    _rc = _restricted_cat_ids()
+                    if _rc and (matched_category or {}).get("id", "").lower() not in _rc:
+                        sweep_status["skipped_restricted"] = sweep_status.get("skipped_restricted", 0) + 1
+                        continue
 
                     # Prefer canonical URL as the storage key (collapses m./www./tracking variants)
                     canon_url = canonicalize_url(url)
@@ -1218,8 +2022,19 @@ def run_adb_sweep():
                     with open(os.path.join(target_dir, f"{fname}.json"), "w", encoding="utf-8") as f:
                         json.dump(entry_data, f, indent=2, ensure_ascii=False)
 
-                    z_ok = send_to_zotero(storage_url, title, metadata.get("abstract", ""), matched_category["name"], doi=doi)
+                    # DEDUP vs the Zotero cache (no API). Items already in Zotero
+                    # are marked synced; genuinely-new ones are DEFERRED and
+                    # BATCH-posted (50/POST) after the loop — not one slow call each.
+                    if _zotero_in_cache(storage_url, doi, title):
+                        z_ok = True
+                    else:
+                        z_ok = False
+                        _zbatch.append({"storage_url": storage_url, "title": title,
+                                        "abstract": (metadata.get("abstract", "") if metadata else ""),
+                                        "category_name": matched_category["name"], "doi": doi})
+                    _bk0 = _t.time()
                     b_ok = add_chrome_bookmark(storage_url, title, matched_category["name"])
+                    if _t.time() - _bk0 > 1: _dbg(f"SLOW bookmark {(_t.time()-_bk0):.1f}s {storage_url[:60]}")
 
                     # IMPORTANT: write to `h` (just-loaded, line 1131), NOT the
                     # outer `history` which was loaded once at sweep start and
@@ -1241,20 +2056,106 @@ def run_adb_sweep():
                         "z_synced": z_ok,
                         "b_synced": b_ok
                     }
+                    _stamp_accountability(
+                        h[storage_url], storage_url, "history_upsert", "adb_sweep",
+                        classification={
+                            "cat_id": matched_category.get("id"),
+                            "category": matched_category.get("name"),
+                            "source": matched_category.get("_classification_source") or "configured_rules",
+                            "confidence": matched_category.get("_classification_confidence"),
+                            "reason": matched_category.get("_classification_reason"),
+                        },
+                    )
+                    _ac0 = _t.time()
+                    _record_accountability_event("history_upsert", storage_url, h[storage_url], source="adb_sweep")
+                    if _t.time() - _ac0 > 1: _dbg(f"SLOW accountability {(_t.time()-_ac0):.1f}s")
+                    # Science-News 2nd stage: a digest/roundup explodes into its
+                    # contained articles/books, each classified + saved to its own
+                    # destination (writes into `h`; persisted by save_history below).
+                    # No-ops for a single news story (no primary links). Best-effort.
+                    # Science-News 2nd stage: collect now, explode AFTER the loop so
+                    # its per-digest network never blocks the fast main sweep.
+                    if matched_category.get("id") == "science_news":
+                        _scinews_urls.append(storage_url)
                     save_history(h)
                     sweep_status["tabs_matched"] += 1
 
                     # AUTO-CLEANUP: Close tab on phone ONLY if enabled AND fully synced
                     # AND it has a real category match (hard safety gate — see _safe_to_close).
-                    if env.get("close_tabs_after_save") and tab_id and _safe_to_close(h[storage_url]):
-                        try:
-                            # DevTools close endpoint: POST http://localhost:9222/json/close/[id]
-                            requests.post(f"http://127.0.0.1:9222/json/close/{tab_id}", timeout=5)
-                        except Exception:
-                            pass
+                    if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and tab_id and _safe_to_close(h[storage_url]):
+                        _close_devtools_tab(tab_id, storage_url, h[storage_url], "sweep_after_save")
 
                 except Exception:
                     continue
+
+        # BATCH-save the deferred net-new items to Zotero (50 per POST), then flip
+        # their z_synced so the deferred close pass is eligible to close them.
+        if _zbatch:
+            _dbg(f"=== batch zotero: {len(_zbatch)} new items ===")
+            try:
+                _zres = _batch_zotero_post(_zbatch, env)
+                _saved = sum(1 for v in _zres.values() if v)
+                _h2 = load_history()
+                for _u, _ok in _zres.items():
+                    if _ok and _u in _h2:
+                        _h2[_u]["z_synced"] = True
+                save_history(_h2)
+                _dbg(f"=== batch zotero done: {_saved}/{len(_zbatch)} saved ===")
+            except Exception as _e:
+                _dbg(f"batch zotero error: {type(_e).__name__}: {str(_e)[:80]}")
+
+        # Science-News 2nd stage (POST-pass): explode each saved news digest into
+        # its contained articles/books -> their own destinations. Runs AFTER the
+        # fast main loop so its per-digest fetch+classify+save never blocks it.
+        if _scinews_urls:
+            _dbg(f"=== 2nd stage: {len(_scinews_urls)} science_news digests ===")
+            try:
+                _h3 = load_history()
+                _ss_total = 0
+                for _su in _scinews_urls:
+                    try:
+                        ss = second_stage_extract(_su, env, categories, history=_h3)
+                        if ss.get("saved"):
+                            _ss_total += ss["saved"]
+                            if _su in _h3:
+                                _h3[_su]["second_stage"] = {"found": ss["found"],
+                                    "saved": ss["saved"], "by_cat": ss["by_cat"]}
+                    except Exception:
+                        pass
+                save_history(_h3)
+                _dbg(f"=== 2nd stage done: {_ss_total} sub-items saved ===")
+            except Exception as _e:
+                _dbg(f"2nd stage error: {type(_e).__name__}")
+
+        # FLUSH the bookmark batch: ONE ~100MB rewrite for every bookmark
+        # buffered by the main loop + 2nd stage (vs ~9.5s per-item before).
+        # Then flip b_synced on the rows whose bookmark was actually written.
+        try:
+            _bk_t0 = _t.time()
+            _written = _flush_bookmark_batch()
+            _dbg(f"=== bookmark flush: {len(_written)} written in {(_t.time()-_bk_t0):.1f}s ===")
+            if _written:
+                _h4 = load_history()
+                _flipped = 0
+                for _u in _written:
+                    if _u in _h4 and not _h4[_u].get("b_synced"):
+                        _h4[_u]["b_synced"] = True
+                        _flipped += 1
+                if _flipped:
+                    save_history(_h4)
+                _dbg(f"=== b_synced flipped: {_flipped} ===")
+        except Exception as _e:
+            _dbg(f"bookmark flush error: {type(_e).__name__}: {str(_e)[:80]}")
+
+        # Now that bookmarks are physically on disk and flags are flipped, close
+        # the tabs that became fully synced (z_synced AND b_synced). Done here
+        # immediately rather than only via the 75s delayed pass.
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env):
+            try:
+                _cl = _do_close_synced_tabs_now()
+                _dbg(f"=== close pass: {_cl.get('closed')} closed / {_cl.get('total')} tabs ===")
+            except Exception as _e:
+                _dbg(f"close pass error: {type(_e).__name__}")
 
         # Post-sweep autonomous dedup cleanup
         try:
@@ -1268,7 +2169,7 @@ def run_adb_sweep():
         # The extension drains the queue within ~30s and ACKs back, flipping
         # b_synced=true; a 75 s later pass finds them properly synced and closes
         # them via the DevTools endpoint.
-        if env.get("close_tabs_after_save"):
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env):
             def _delayed_close():
                 time.sleep(75)
                 try: _do_close_synced_tabs_now()
@@ -1277,6 +2178,13 @@ def run_adb_sweep():
     except Exception as e:
         sweep_status["last_error"] = str(e)
     finally:
+        # Safety: if an error skipped the normal flush, drain the batch so mode
+        # never leaks into later non-sweep writes (reconcile flips b_synced).
+        try:
+            _leftover = _flush_bookmark_batch()
+            if _leftover: _dbg(f"=== finally flush: {len(_leftover)} leftover bookmarks ===")
+        except Exception:
+            pass
         try:
             pending = load_json(PENDING_BOOKMARKS_FILE(), [])
             sweep_status["bookmarks_pending"] = len(pending)
@@ -1291,28 +2199,64 @@ def adb_loop():
     or when the user manually clicks FETCH NOW.
     """
     while True:
-        hours = get_env().get("interval_hours", 6)
+        env = get_env()
+        if not env.get("enable_autonomous_sweep", False):
+            time.sleep(60)
+            continue
+        hours = env.get("interval_hours", 6)
         if hours < 0.1: hours = 0.1
         time.sleep(hours * 3600)  # wait first, then sweep
-        run_adb_sweep()
+        if get_env().get("enable_autonomous_sweep", False):
+            run_adb_sweep()
 
 @app.on_event("startup")
 def start_background_jobs():
     import gc
     init_dirs()
+    # Start the ADB daemon exactly ONCE, hidden, at boot. Our subprocess patch
+    # adds CREATE_NO_WINDOW so this single start-server doesn't flash; once the
+    # daemon is up it persists, so the per-poll `adb devices` calls below
+    # connect silently and never re-fork it. This is the other half of the
+    # "no shell window every second" fix. Bruno 2026-05-27.
+    try:
+        _adb_exe0 = ensure_adb()
+        subprocess.run([_adb_exe0, "start-server"], capture_output=True, timeout=15)
+    except Exception:
+        pass
     # Keep the wireless ADB link alive in the background. Android rotates
     # the connect port whenever Wireless Debugging idles or toggles, which
     # causes manual reconnects to feel flaky. The watchdog auto-discovers
     # the new port via mDNS and reconnects within ~6 s.
     try: _start_adb_watchdog()
     except Exception: pass
-    # Kill any stale panop-server siblings left from a previous crashed run
+    # Kill any stale panop-server siblings left from a previous crashed run.
+    # Bruno 2026-05-27 (revised): match the exact ABSOLUTE PATH of this
+    # main.py against each candidate process's positional arguments — not
+    # against the cmdline as a whole string. Otherwise we false-positive on
+    # test harnesses / scripts whose heredoc text happens to mention
+    # "panop_server" or "main.py" and end up TERMing them (that bit our own
+    # comparison/perf scripts). Exactly one Panop ever owns port 8000.
     try:
         import psutil
         me = os.getpid()
-        for proc in psutil.process_iter(['pid', 'name']):
-            if proc.info['name'] and 'panop-server' in proc.info['name'].lower() and proc.info['pid'] != me:
-                proc.kill()
+        my_main_norm = os.path.normcase(os.path.abspath(__file__))
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['pid'] == me:
+                    continue
+                cmdline = proc.info.get('cmdline') or []
+                # Skip argv[0] (the python interpreter path). For every other
+                # arg, only treat it as a "sibling" if it's literally this
+                # same main.py file.
+                for arg in cmdline[1:]:
+                    try:
+                        if os.path.normcase(os.path.abspath(str(arg))) == my_main_norm:
+                            proc.kill()
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
     except Exception:
         pass
     # Load cached Zotero URL set from last run so dedup works immediately,
@@ -1346,12 +2290,23 @@ def read_env(): return get_env()
 
 @app.post("/api/v1/env")
 def update_ev(data: dict):
-    save_env(data)
+    env = get_env()
+    if isinstance(data, dict):
+        env.update(data)
+    save_env(env)
     init_dirs()
-    return {"status": "ok"}
+    return {"status": "ok", "env": env}
 
 @app.get("/api/v1/status")
-def get_status(): return sweep_status
+def get_status():
+    try:
+        adb_exe = ensure_adb()
+        ready, _u, _o = _adb_list_devices(adb_exe)
+        sweep_status["adb_connected"] = bool(ready)
+        sweep_status["device_id"] = ready[0] if ready else None
+    except Exception:
+        pass
+    return sweep_status
 
 @app.get("/api/v1/history")
 def get_hi(): return load_history()
@@ -1393,6 +2348,8 @@ def _auto_sync_entry(url):
             # Queues if Chrome is running; extension drains it within ~30s.
             if add_chrome_bookmark(url, item.get("title"), item.get("category")):
                 item["b_synced"] = True
+        _stamp_accountability(item, url, "sync_update", "auto_sync")
+        _record_accountability_event("sync_update", url, item, source="auto_sync")
         save_history(h)
     except Exception:
         pass
@@ -1435,6 +2392,308 @@ def del_hi(item: DeleteItem):
     save_history(h)
     return {"status": "ok"}
 
+def OVERRIDES_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_overrides.json")
+
+def CORRECTION_LOG_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_corrections.jsonl")
+
+def LEARNED_RULES_FILE():
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(_root, "state", "panop", "panop_classifier_learned_rules.json")
+
+def load_overrides():
+    path = OVERRIDES_FILE()
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        save_json(path, {})
+        return {}
+    return load_json(path, {})
+
+def save_overrides(o):
+    path = OVERRIDES_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_json(path, o)
+
+_classifier_corrections_lock = threading.Lock()
+_LEARNED_DOMAIN_MIN_CORRECTIONS = 3
+
+def _host_for_url(url):
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(canonicalize_url(url) or url).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+def _category_by_id(categories, cat_id):
+    cat_id = str(cat_id or "").strip()
+    if cat_id.lower() == "uncategorized":
+        return {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+    return next((c for c in categories if c.get("id") == cat_id), None)
+
+def _unique_override_entries(overrides):
+    seen = set()
+    for key, item in (overrides or {}).items():
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or key
+        canon = item.get("canonical_url") or canonicalize_url(url) or url
+        if canon in seen:
+            continue
+        seen.add(canon)
+        yield item
+
+def _append_correction_events(events):
+    if not events:
+        return
+    path = CORRECTION_LOG_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for event in events:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+
+def _rebuild_learned_rules(overrides=None):
+    overrides = overrides if overrides is not None else load_overrides()
+    host_counts = {}
+    host_examples = {}
+    for item in _unique_override_entries(overrides):
+        url = item.get("canonical_url") or item.get("url") or ""
+        host = item.get("host") or _host_for_url(url)
+        cat_id = str(item.get("category_id") or "uncategorized").strip() or "uncategorized"
+        if not host:
+            continue
+        host_counts.setdefault(host, Counter())[cat_id] += 1
+        host_examples.setdefault(host, {}).setdefault(cat_id, [])
+        if len(host_examples[host][cat_id]) < 5:
+            host_examples[host][cat_id].append({
+                "url": url,
+                "title": item.get("title", ""),
+                "reason": item.get("reason", ""),
+                "updated_at": item.get("updated_at", ""),
+            })
+
+    domains = {}
+    for host, counts in host_counts.items():
+        total = sum(counts.values())
+        if total < _LEARNED_DOMAIN_MIN_CORRECTIONS or len(counts) != 1:
+            continue
+        cat_id, count = counts.most_common(1)[0]
+        confidence = min(0.98, 0.70 + (0.05 * min(count, 5)))
+        domains[host] = {
+            "host": host,
+            "category_id": cat_id,
+            "count": count,
+            "total_corrections": total,
+            "confidence": round(confidence, 3),
+            "source": "consistent_user_corrections",
+            "enabled": True,
+            "examples": host_examples.get(host, {}).get(cat_id, []),
+            "updated_at": datetime.now().isoformat(),
+            "reason": f"Learned from {count} consistent user correction(s) on {host}.",
+        }
+
+    learned = {
+        "version": 1,
+        "min_domain_corrections": _LEARNED_DOMAIN_MIN_CORRECTIONS,
+        "updated_at": datetime.now().isoformat(),
+        "domains": domains,
+    }
+    path = LEARNED_RULES_FILE()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_json(path, learned)
+    return learned
+
+def load_learned_rules():
+    return load_json(LEARNED_RULES_FILE(), {
+        "version": 1,
+        "min_domain_corrections": _LEARNED_DOMAIN_MIN_CORRECTIONS,
+        "domains": {},
+    })
+
+def _classifier_override_decision(url):
+    storage_url = canonicalize_url(url) or url
+    overrides = load_overrides()
+    matched_override = overrides.get(url) or overrides.get(storage_url)
+    if matched_override:
+        cat_id = str(matched_override.get("category_id") or "uncategorized").strip() or "uncategorized"
+        action = "block" if cat_id.lower() == "uncategorized" else "match"
+        return {
+            "action": action,
+            "category_id": cat_id,
+            "source": "exact_user_correction",
+            "confidence": 1.0,
+            "reason": matched_override.get("reason") or "User correction for this exact URL.",
+            "details": matched_override,
+        }
+
+    host = _host_for_url(storage_url)
+    rule = (load_learned_rules().get("domains") or {}).get(host)
+    if rule and rule.get("enabled", True):
+        cat_id = str(rule.get("category_id") or "uncategorized").strip() or "uncategorized"
+        action = "block" if cat_id.lower() == "uncategorized" else "match"
+        return {
+            "action": action,
+            "category_id": cat_id,
+            "source": "learned_domain_rule",
+            "confidence": float(rule.get("confidence") or 0.0),
+            "reason": rule.get("reason") or f"Learned domain rule for {host}.",
+            "details": rule,
+        }
+    return None
+
+@app.post("/api/v1/classifier/overrides")
+def add_classifier_overrides(payload: dict):
+    items = payload.get("items") or []
+    events = []
+    with _classifier_corrections_lock:
+        o = load_overrides()
+        now = datetime.now().isoformat()
+        changed = 0
+        for item in items:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            storage_url = canonicalize_url(url) or url
+            cat_id = str(item.get("category_id") or "uncategorized").strip() or "uncategorized"
+            entry = {
+                "url": url,
+                "canonical_url": storage_url,
+                "host": _host_for_url(storage_url),
+                "title": item.get("title", ""),
+                "category_id": cat_id,
+                "previous_category_id": item.get("previous_category_id", ""),
+                "previous_category_name": item.get("previous_category_name", ""),
+                "previous_status": item.get("previous_status", ""),
+                "previous_reason": item.get("previous_reason", ""),
+                "decision_quality": item.get("decision_quality", ""),
+                "reason": item.get("reason", ""),
+                "updated_at": now,
+                "source": "inbox_user_correction",
+            }
+            o[url] = entry
+            o[storage_url] = entry
+            events.append({
+                "event": "classifier_correction",
+                "url": url,
+                "canonical_url": storage_url,
+                "host": entry["host"],
+                "title": entry["title"],
+                "category_id": cat_id,
+                "previous_category_id": entry["previous_category_id"],
+                "previous_category_name": entry["previous_category_name"],
+                "previous_status": entry["previous_status"],
+                "previous_reason": entry["previous_reason"],
+                "decision_quality": entry["decision_quality"],
+                "reason": entry["reason"],
+                "ts": now,
+            })
+            changed += 1
+        save_overrides(o)
+        learned = _rebuild_learned_rules(o)
+        _append_correction_events(events)
+    return {
+        "status": "ok",
+        "count": changed,
+        "exact_overrides": len(list(_unique_override_entries(o))),
+        "learned_domains": len((learned.get("domains") or {})),
+    }
+
+@app.get("/api/v1/classifier/overrides")
+def get_classifier_overrides():
+    return load_overrides()
+
+@app.get("/api/v1/classifier/corrections/stats")
+def get_classifier_correction_stats():
+    overrides = load_overrides()
+    learned = load_learned_rules()
+    unique = list(_unique_override_entries(overrides))
+    by_category = Counter(str(item.get("category_id") or "uncategorized") for item in unique)
+    return {
+        "status": "ok",
+        "exact_overrides": len(unique),
+        "learned_domains": len((learned.get("domains") or {})),
+        "by_category": dict(sorted(by_category.items())),
+        "learned": learned,
+    }
+
+class AddLinkItem(BaseModel):
+    url: str
+    title: str = ""
+    category_id: str = ""
+
+@app.post("/api/v1/history/add")
+def add_hi(item: AddLinkItem, background_tasks: BackgroundTasks):
+    h = load_history()
+    url = item.url.strip()
+    storage_url = canonicalize_url(url) or url
+    if storage_url in h:
+        return {"status": "already_exists", "message": "URL already exists in history."}
+    
+    title = item.title.strip() or url
+    
+    # Resolve category
+    config = load_config()
+    categories = config.get("categories", [])
+    matched_cat = None
+    if item.category_id:
+        if item.category_id == "uncategorized":
+            matched_cat = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+        else:
+            matched_cat = next((c for c in categories if c["id"] == item.category_id), None)
+    
+    if not matched_cat:
+        # Check user overrides fallback
+        try:
+            overrides = load_overrides()
+            matched_override = overrides.get(url) or overrides.get(storage_url)
+            if matched_override:
+                cat_id = matched_override.get("category_id")
+                if cat_id == "uncategorized":
+                    matched_cat = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+                else:
+                    matched_cat = next((c for c in categories if c["id"] == cat_id), None)
+        except Exception:
+            pass
+    
+    if not matched_cat:
+        # Auto-detect category
+        url_lower = url.lower()
+        for cat in categories:
+            domains = cat.get("domain_keywords", [])
+            if domains and any(d.lower() in url_lower for d in domains if d):
+                matched_cat = cat
+                break
+                
+    if not matched_cat:
+        matched_cat = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
+        
+    # Save history entry
+    h[storage_url] = {
+        "title": title,
+        "category": matched_cat["name"],
+        "cat_id": matched_cat["id"],
+        "date": datetime.now().isoformat(),
+        "abstract": "",
+        "canonical_url": storage_url,
+        "original_url": url if url != storage_url else None,
+        "doi": "",
+        "ai_learned": False,
+        "file": "",
+        "z_synced": False,
+        "b_synced": False
+    }
+    save_history(h)
+    
+    # Auto-sync entry in background tasks (Zotero + Bookmarks)
+    background_tasks.add_task(_auto_sync_entry, storage_url)
+    
+    return {"status": "ok", "category": matched_cat["name"]}
+
 @app.post("/api/v1/fetch_now")
 def f_now(background_tasks: BackgroundTasks):
     # Flip state synchronously so the UI's status poll doesn't race the worker
@@ -1446,6 +2705,23 @@ def f_now(background_tasks: BackgroundTasks):
     sweep_status["matched"] = 0
     background_tasks.add_task(run_adb_sweep)
     return {"status": "fetching"}
+
+
+@app.post("/api/v1/restrict_categories")
+def set_restrict_categories(categories: str = ""):
+    """Limit the routine to certain categories (save+close ONLY these). Pass a
+    comma-separated list of cat ids, e.g. categories=articles,books,science_news.
+    Empty = no restriction (all categories). Bruno 2026-06-18."""
+    env = get_env()
+    cats = [c.strip().lower() for c in (categories or "").split(",") if c.strip()]
+    env["restrict_categories"] = cats
+    save_env(env)
+    return {"status": "ok", "restrict_categories": cats}
+
+
+@app.get("/api/v1/restrict_categories")
+def get_restrict_categories():
+    return {"restrict_categories": get_env().get("restrict_categories") or []}
 
 enrich_status = {"running": False, "total": 0, "done": 0, "updated": 0, "last_run": None, "cancel": False}
 
@@ -1521,12 +2797,17 @@ bulk_sync_status = {"running": False, "type": None, "total": 0, "done": 0, "succ
 
 def run_bulk_sync(sync_type=None):
     global bulk_sync_status
-    # Always reconcile first — prevents re-POSTing items Zotero already has,
-    # and re-queuing bookmarks Chrome already has.
-    try:
-        bulk_sync_status["reconciled"] = reconcile_all()
-    except Exception:
-        bulk_sync_status["reconciled"] = None
+    # Reconcile first — flips flags for items already present remotely so we
+    # don't re-POST/re-queue them. SKIP it for a bookmark-only sync: reconcile
+    # does a full (throttled, sometimes-hanging) Zotero API walk that's
+    # irrelevant to writing bookmarks, and it runs BEFORE the status update, so
+    # a hang there silently strands the whole sync. add_chrome_bookmark already
+    # dedups against the existing Bookmarks file. Bruno 2026-06-20.
+    if sync_type != 'bookmark':
+        try:
+            bulk_sync_status["reconciled"] = reconcile_all()
+        except Exception:
+            bulk_sync_status["reconciled"] = None
     """Retries Zotero/Bookmark sync for all entries marked as unsynced.
     Saves history incrementally (every 5 items) so the UI can show progress
     via the meta/status endpoints rather than seeing nothing until the end.
@@ -1544,6 +2825,12 @@ def run_bulk_sync(sync_type=None):
     })
     dirty = False
     SAVE_EVERY = 5
+    # When writing bookmarks directly (Chrome closed), buffer every write and
+    # flush ONCE — the per-item path rewrites the ~100MB Bookmarks file each
+    # call (~9.5s). Mirrors run_adb_sweep. Bruno 2026-06-20.
+    _bk_batch_on = (sync_type in (None, 'bookmark')) and not is_chrome_running()
+    if _bk_batch_on:
+        _begin_bookmark_batch()
     try:
         for i, (url, item) in enumerate(targets, 1):
             if bulk_sync_status.get("cancel"):
@@ -1557,7 +2844,10 @@ def run_bulk_sync(sync_type=None):
                     else:
                         bulk_sync_status["failed"] += 1
                 if (sync_type is None or sync_type == 'bookmark') and not item.get("b_synced"):
-                    if add_chrome_bookmark(url, item.get("title"), item.get("category")):
+                    if _bk_batch_on:
+                        # buffers (returns False); b_synced flipped after flush below
+                        add_chrome_bookmark(url, item.get("title"), item.get("category"))
+                    elif add_chrome_bookmark(url, item.get("title"), item.get("category")):
                         item["b_synced"] = True
                         dirty = True
                         bulk_sync_status["succeeded"] += 1
@@ -1568,9 +2858,21 @@ def run_bulk_sync(sync_type=None):
             if dirty and i % SAVE_EVERY == 0:
                 save_history(h)
                 dirty = False
+        # Flush the buffered bookmarks in ONE file write, then flip b_synced for
+        # the urls actually written.
+        if _bk_batch_on:
+            written = _flush_bookmark_batch()
+            for url, item in targets:
+                if url in written and not item.get("b_synced"):
+                    item["b_synced"] = True
+                    dirty = True
+                    bulk_sync_status["succeeded"] += 1
         if dirty:
             save_history(h)
     finally:
+        if _bk_batch_on:
+            try: _flush_bookmark_batch()   # safety: never leak batch mode
+            except Exception: pass
         bulk_sync_status["running"] = False
 
 @app.get("/api/v1/history/sync/status")
@@ -1614,6 +2916,8 @@ def sync_single(url: str, type: str):
         if ok: item["b_synced"] = True
     
     if ok:
+        _stamp_accountability(item, url, "sync_update", f"manual_sync_{type}")
+        _record_accountability_event("sync_update", url, item, source=f"manual_sync_{type}")
         save_history(h)
         return {"status": "ok"}
     return {"status": "error"}
@@ -1675,16 +2979,16 @@ def _do_close_synced_tabs_now():
     except Exception as e:
         return {"status": "error", "message": f"ADB/DevTools not reachable: {e}"}
     h = load_history()
-    synced_urls = set()
+    synced_urls = {}
     # Hard safety gate: only enrol items that pass _safe_to_close. This means
     # uncategorized items are NEVER eligible to be closed by this routine,
     # even if both syncs succeeded somehow.
     for u, item in h.items():
         if _safe_to_close(item):
-            synced_urls.add(u)
-            synced_urls.add(canonicalize_url(u))
+            synced_urls[u] = (u, item)
+            synced_urls[canonicalize_url(u)] = (u, item)
             for k in ("canonical_url", "original_url"):
-                if item.get(k): synced_urls.add(item[k])
+                if item.get(k): synced_urls[item[k]] = (u, item)
     closed, skipped, failed = 0, 0, 0
     for t in tabs:
         url = t.get("url", "")
@@ -1692,10 +2996,12 @@ def _do_close_synced_tabs_now():
         if not tid or not url or url.startswith("chrome://"):
             skipped += 1
             continue
-        if url in synced_urls or canonicalize_url(url) in synced_urls:
+        match = synced_urls.get(url) or synced_urls.get(canonicalize_url(url))
+        if match:
+            history_url, item = match
             try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                closed += 1
+                if _close_devtools_tab(tid, history_url, item, "close_synced_tabs"):
+                    closed += 1
             except Exception:
                 failed += 1
         else:
@@ -1781,46 +3087,80 @@ def inspect_tabs(wake: bool = False):
     for t in tabs:
         url = (t.get("url") or "").strip()
         title = (t.get("title") or "").strip()
+        tid = t.get("id")
         if not url or url == "about:blank":
             buckets["discarded"] += 1
-            rows.append({"url": url, "title": title, "status": "discarded",
+            rows.append({"id": tid, "url": url, "title": title, "status": "discarded",
                          "reason": "Android Chrome suspended this tab — URL will reappear when activated."})
             continue
         if url.startswith("chrome://") or url.startswith("devtools://") or url.startswith("about:") or url.startswith("chrome-native://"):
             buckets["chrome_internal"] += 1
-            rows.append({"url": url, "title": title, "status": "chrome_internal", "reason": "Internal Chrome page."})
+            rows.append({"id": tid, "url": url, "title": title, "status": "chrome_internal", "reason": "Internal Chrome page."})
             continue
         if url in h or canonicalize_url(url) in h:
             buckets["saved"] += 1
-            rows.append({"url": url, "title": title, "status": "saved",
+            rows.append({"id": tid, "url": url, "title": title, "status": "saved",
                          "reason": "Already in history."})
             continue
         url_lower = url.lower()
         matched = None
         needs_body = False
-        for cat in categories:
-            domains = cat.get("domain_keywords", [])
-            tab_group = cat.get("tab_group", "")
-            if tab_group and tab_group.lower() not in str(t).lower():
-                continue
-            domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
-            if not domain_match and strict and domains:
-                continue
-            if domain_match or not domains:
-                matched = cat.get("name", "?")
-                needs_body = bool(cat.get("body_required") or cat.get("body_forbidden"))
-                break
+        matched_layer = None
+
+        override_decision = _classifier_override_decision(url)
+        if override_decision and override_decision.get("action") == "block":
+            buckets["no_match"] += 1
+            rows.append({
+                "id": tid, "url": url, "title": title, "status": "no_match",
+                "category": "Uncategorized",
+                "reason": f"User correction says do not sweep: {override_decision.get('reason', '')}".strip(),
+                "decision_source": override_decision.get("source"),
+                "decision_confidence": override_decision.get("confidence"),
+            })
+            continue
+        
+        # 1. Try smart classifier first (without page meta)
+        smart_cat = _classify_tab_candidate(url, None, categories, get_env())
+        if smart_cat:
+            matched = smart_cat.get("name", "?")
+            needs_body = False
+            matched_layer = smart_cat.get("_classification_source") or "smart_classifier"
+        else:
+            # 2. Fall back to old keyword/domain logic
+            matched_layer = "inline_rules"
+            for cat in categories:
+                domains = cat.get("domain_keywords", [])
+                tab_group = cat.get("tab_group", "")
+                if tab_group and tab_group.lower() not in str(t).lower():
+                    continue
+                domain_match = any(d.lower() in url_lower for d in domains if d) if domains else True
+                if not domain_match and strict and domains:
+                    continue
+                if domain_match or not domains:
+                    matched = cat.get("name", "?")
+                    needs_body = bool(cat.get("body_required") or cat.get("body_forbidden"))
+                    break
         if matched:
             if needs_body:
                 buckets["body_required"] = buckets.get("body_required", 0) + 1
-                rows.append({"url": url, "title": title, "status": f"needs_body_check",
+                rows.append({"id": tid, "url": url, "title": title, "status": "needs_body_check",
                              "reason": f"Domain matches '{matched}' but category has body-keyword rules. Next sweep will fetch and check."})
             else:
-                rows.append({"url": url, "title": title, "status": f"match:{matched}",
-                             "reason": f"Would be saved to '{matched}' on next sweep."})
+                if matched_layer == "exact_user_correction":
+                    reason_str = f"User correction: would be saved to '{matched}'."
+                elif matched_layer == "learned_domain_rule":
+                    reason_str = f"Learned from your corrections: would be saved to '{matched}'."
+                elif matched_layer == "smart_classifier":
+                    reason_str = f"Would be saved to '{matched}' (matched by smart classifier)."
+                else:
+                    reason_str = f"Would be saved to '{matched}' on next sweep."
+                rows.append({"id": tid, "url": url, "title": title, "status": f"match:{matched}",
+                             "reason": reason_str,
+                             "decision_source": matched_layer,
+                             "decision_confidence": smart_cat.get("_classification_confidence") if isinstance(smart_cat, dict) else None})
         else:
             buckets["no_match"] += 1
-            rows.append({"url": url, "title": title, "status": "no_match",
+            rows.append({"id": tid, "url": url, "title": title, "status": "no_match",
                          "reason": "No category's keywords matched this URL."})
     return {"status": "ok", "total": len(tabs), "buckets": buckets, "tabs": rows, "woken": woken}
 
@@ -1830,6 +3170,8 @@ def close_synced_tabs():
     and closes every tab whose URL (or its canonical form) is already in
     history with z_synced=true AND b_synced=true. Safe: untouched if either
     flag is missing."""
+    if _manual_vetting_required():
+        return {"status": "blocked", "closed": 0, "message": "Manual vetting is required before Egon may close already-synced tabs."}
     return _do_close_synced_tabs_now()
 
 # ── Sequential wake-save-close drain for thousands of suspended tabs ─────────
@@ -1847,54 +3189,167 @@ def _load_drain_state():
 def _save_drain_state(s):
     save_json(_drain_state_file(), s)
 
+def _restricted_cat_ids():
+    """Category ids the routine may currently save+close (empty set = ALL).
+    Set via config 'restrict_categories' (the Inbox 'Articles/Books/Science News
+    only' button writes it). Bruno 2026-06-18: restrict to those three for now."""
+    try:
+        r = get_env().get("restrict_categories") or []
+        return {str(c).strip().lower() for c in r if str(c).strip()}
+    except Exception:
+        return set()
+
+
 def _safe_to_close(item):
     """HARD SAFETY GUARD. Refuses to close a tab unless:
         (1) it has a real category match (not 'uncategorized' / empty)
-        (2) AND the item has been backed up to BOTH Zotero and Chrome Bookmarks
+        (2) its category is within the ACTIVE restriction (if any)
+        (3) AND the item has been backed up to BOTH Zotero and Chrome Bookmarks
     No env flag, no future code path, can override this. A tab that does not
     pass this gate is left OPEN on the phone, no matter what."""
+    if _manual_vetting_required(): return False
     if not item: return False
     cat_id = (item.get("cat_id") or "").strip().lower()
     if not cat_id or cat_id == "uncategorized": return False
+    _rc = _restricted_cat_ids()
+    if _rc and cat_id not in _rc: return False   # only close the allowed categories
     return bool(item.get("z_synced")) and bool(item.get("b_synced"))
 
-def _drain_classify_and_save(url, title, categories, env, tid):
-    """Returns (saved_bool, closed_bool). Shared by both phases."""
-    h = load_history()
-    storage_url = canonicalize_url(url) or url
-    if storage_url in h or url in h:
-        item = h.get(storage_url) or h.get(url) or {}
-        if env.get("close_tabs_after_save") and _safe_to_close(item):
-            try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                return False, True
-            except Exception: pass
-        return False, False
-    url_lower = url.lower()
-    matched = None
-    # Master engine FIRST — the one shared classifier (egon lib.classifier via
-    # /api/v1/classify), same as Routster. Bruno 2026-06-17: one high-quality
-    # engine for all surfaces. Map its taxonomy verdict to a local category by
-    # name/id; on miss or if the endpoint is down, fall back to local rules.
+def _append_close_audit(entry):
     try:
-        _mr = requests.post("http://127.0.0.1:8000/api/v1/classify",
-                            json={"url": url, "title": title}, timeout=8).json()
-        if _mr.get("action") == "match" and _mr.get("category") and _mr["category"] != "reject":
-            _mc = _mr["category"]; _mcn = _mc.replace("_", " ").lower()
-            for cat in categories:
-                if cat.get("name", "").lower() == _mcn or cat.get("id", "").lower() == _mc:
-                    matched = cat; break
+        path = CLOSE_AUDIT_FILE()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
-        matched = None
-    if not matched:
-      for cat in categories:
+        pass
+
+def _close_devtools_tab(tid, url, item, source):
+    """Close one Android Chrome DevTools target with a durable audit trail."""
+    env = get_env()
+    safe = _safe_to_close(item)
+    # Trust the z_synced/b_synced flags that _safe_to_close already requires —
+    # they are set only after verification at save time. The standalone Panop
+    # closes on flags alone; egon had drifted to re-deriving proof from the
+    # ~100MB Bookmarks file + a full Zotero API walk PER TAB, which made the
+    # close pass hang for tens of minutes. Flag-trust matches the proven-fast
+    # standalone while keeping the audit trail + category restriction. Bruno 2026-06-20.
+    backup_proof = (
+        {"ok": True, "source": "history_flags",
+         "zotero_flag": bool(item.get("z_synced")),
+         "bookmark_flag": bool(item.get("b_synced"))}
+        if safe else {"ok": False, "skipped": "safe_to_close_false"}
+    )
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "source": source,
+        "tab_id": tid,
+        "url": url,
+        "category": (item or {}).get("category"),
+        "cat_id": (item or {}).get("cat_id"),
+        "z_synced": bool((item or {}).get("z_synced")),
+        "b_synced": bool((item or {}).get("b_synced")),
+        "safe_to_close": bool(safe),
+        "backup_proof": backup_proof,
+        "manual_vetting_required": bool(_manual_vetting_required(env)),
+        "close_tabs_after_save": bool(env.get("close_tabs_after_save")),
+        "enable_autonomous_sweep": bool(env.get("enable_autonomous_sweep")),
+        "closed": False,
+    }
+    if not safe:
+        entry["blocked_reason"] = "safe_to_close_false"
+        _append_close_audit(entry)
+        _record_accountability_event("close_blocked", url, item, source=source, close=entry)
+        return False
+    if not backup_proof.get("ok"):
+        entry["blocked_reason"] = "missing_verified_bookmark_or_zotero"
+        _append_close_audit(entry)
+        _record_accountability_event("close_blocked", url, item, source=source, close=entry)
+        return False
+    try:
+        resp = requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
+        entry["response_status"] = resp.status_code
+        entry["closed"] = 200 <= resp.status_code < 300
+        return bool(entry["closed"])
+    except Exception as e:
+        entry["error"] = str(e)[:300]
+        return False
+    finally:
+        _append_close_audit(entry)
+        _record_accountability_event("close_attempt", url, item, source=source, close=entry)
+
+def _classify_tab_candidate(url, page_meta, categories, env):
+    """Classifies a tab candidate using Egon's smart layered classifier,
+    falling back to inline domain/keyword matching if needed.
+    """
+    classify_url = _resolve_terminal_tab_url(url, env)
+    try:
+        decision = _classifier_override_decision(classify_url) or _classifier_override_decision(url)
+        if decision:
+            if decision.get("action") == "block":
+                return None
+            matched = _category_by_id(categories, decision.get("category_id"))
+            if matched:
+                out = dict(matched)
+                out["_classification_source"] = decision.get("source")
+                out["_classification_confidence"] = decision.get("confidence")
+                out["_classification_reason"] = decision.get("reason")
+                return out
+    except Exception:
+        pass
+
+    try:
+        import sys, os
+        _parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _parent not in sys.path:
+            sys.path.insert(0, _parent)
+        import lib.classifier as classifier
+        res = classifier.classify(classify_url, page_meta or {})
+        if res.action == "match" and res.category:
+            matched = next((c for c in categories if c.get("id") == res.category), None)
+            if matched:
+                out = dict(matched)
+                out["_classification_source"] = "smart_classifier"
+                out["_classification_layer"] = res.layer
+                out["_classification_confidence"] = res.confidence
+                out["_classification_reason"] = (res.evidence or {}).get("reason", "")
+                return out
+        # in-process classifier reached (egon mode); its verdict (match or not)
+        # is authoritative — skip the HTTP shim below.
+        page_meta = page_meta if page_meta is not None else {}
+        page_meta["_classifier_inproc"] = True
+    except Exception:
+        pass
+
+    # PORTABILITY SEAM (standalone mode): when lib.classifier is not importable
+    # (the standalone Panop has no lib/ tree), reach the SAME shared engine over
+    # HTTP at the classify endpoint — "one high-quality engine for all surfaces"
+    # (Bruno 2026-06-17). In egon this block is skipped (in-process succeeded).
+    # Lets a single canonical main.py serve both deployments. Bruno 2026-06-20.
+    if not (page_meta or {}).get("_classifier_inproc"):
+        try:
+            _mr = requests.post("http://127.0.0.1:8000/api/v1/classify",
+                                json={"url": classify_url, "title": (page_meta or {}).get("title", "")},
+                                timeout=8).json()
+            if _mr.get("action") == "match" and _mr.get("category") and _mr["category"] != "reject":
+                _mc = _mr["category"]; _mcn = _mc.replace("_", " ").lower()
+                for cat in categories:
+                    if cat.get("name", "").lower() == _mcn or cat.get("id", "").lower() == _mc:
+                        out = dict(cat)
+                        out["_classification_source"] = "smart_classifier_http"
+                        out["_classification_confidence"] = _mr.get("confidence")
+                        out["_classification_reason"] = (_mr.get("evidence") or {}).get("reason", "")
+                        return out
+        except Exception:
+            pass
+
+    url_lower = classify_url.lower()
+    for cat in categories:
         domains = cat.get("domain_keywords", [])
         if domains and not any(d.lower() in url_lower for d in domains if d):
             continue
         if cat.get("body_required") or cat.get("body_forbidden"):
-            try: meta_p = fetch_page_content(url) or {}
-            except Exception: meta_p = {}
-            page = (meta_p.get("text") or meta_p.get("title") or "") + " " + (meta_p.get("abstract") or "")
+            page = ((page_meta or {}).get("text") or (page_meta or {}).get("title") or "") + " " + ((page_meta or {}).get("abstract") or "")
             pl = page.lower()
             req = [w.lower() for w in cat.get("body_required", []) if w]
             forb = [w.lower() for w in cat.get("body_forbidden", []) if w]
@@ -1903,32 +3358,75 @@ def _drain_classify_and_save(url, title, categories, env, tid):
                 ok = all(w in pl for w in req) if mode == "ALL" else any(w in pl for w in req)
                 if not ok: continue
             if forb and any(w in pl for w in forb): continue
-        matched = cat
-        break
+        out = dict(cat)
+        out["_classification_source"] = "inline_rules"
+        out["_classification_confidence"] = 0.65
+        out["_classification_reason"] = "Matched configured inline rule."
+        return out
+    return None
+
+def _drain_classify_and_save(url, title, categories, env, tid):
+    """Returns (saved_bool, closed_bool). Shared by both phases."""
+    h = load_history()
+    terminal_url = _resolve_terminal_tab_url(url, env)
+    storage_url = canonicalize_url(terminal_url) or terminal_url or url
+    if storage_url in h or url in h:
+        item = h.get(storage_url) or h.get(url) or {}
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and _safe_to_close(item):
+            try:
+                if _close_devtools_tab(tid, storage_url, item, "drain_existing_synced"):
+                    return False, True
+            except Exception: pass
+        return False, False
+    try: meta_p = fetch_page_content(terminal_url) or {}
+    except Exception: meta_p = {}
+    
+    matched = _classify_tab_candidate(terminal_url, meta_p, categories, env)
+    
     if not matched:
         if env.get("catch_uncategorized"):
             matched = {"id": "uncategorized", "name": "Uncategorized", "dest_folder": "Uncategorized"}
         else:
             return False, False
     try:
-        z_ok = send_to_zotero(storage_url, title or url, "", matched["name"], doi="")
-        b_ok = add_chrome_bookmark(storage_url, title or url, matched["name"])
+        z_ok = send_to_zotero(storage_url, title or terminal_url, "", matched["name"], doi="")
+        b_ok = add_chrome_bookmark(storage_url, title or terminal_url, matched["name"])
         h2 = load_history()
         h2[storage_url] = {
-            "title": title or url, "category": matched["name"],
+            "title": title or terminal_url, "category": matched["name"],
             "cat_id": matched["id"], "date": datetime.now().isoformat(),
             "abstract": "", "canonical_url": storage_url,
             "original_url": url if url != storage_url else None,
             "doi": "", "ai_learned": False, "file": "",
             "z_synced": z_ok, "b_synced": b_ok
         }
+        _stamp_accountability(
+            h2[storage_url], storage_url, "history_upsert", "drain",
+            classification={
+                "cat_id": matched.get("id"),
+                "category": matched.get("name"),
+                "source": matched.get("_classification_source") or "configured_rules",
+                "confidence": matched.get("_classification_confidence"),
+                "reason": matched.get("_classification_reason"),
+            },
+        )
+        _record_accountability_event("history_upsert", storage_url, h2[storage_url], source="drain")
+        # Science-News 2nd stage — explode a digest into its contained items
+        # (writes into h2; persisted by save_history below). No-op for stories.
+        if matched.get("id") == "science_news":
+            try:
+                ss = second_stage_extract(storage_url, env, categories, history=h2)
+                if ss.get("saved"):
+                    h2[storage_url]["second_stage"] = {"found": ss["found"],
+                        "saved": ss["saved"], "by_cat": ss["by_cat"]}
+            except Exception:
+                pass
         save_history(h2)
         closed = False
         # Hard safety gate: never close uncategorized tabs, ever.
-        if env.get("close_tabs_after_save") and _safe_to_close(h2[storage_url]):
+        if env.get("close_tabs_after_save") and not _manual_vetting_required(env) and _safe_to_close(h2[storage_url]):
             try:
-                requests.post(f"http://127.0.0.1:9222/json/close/{tid}", timeout=5)
-                closed = True
+                closed = _close_devtools_tab(tid, storage_url, h2[storage_url], "drain_after_save")
             except Exception: pass
         return True, closed
     except Exception as e:
@@ -2178,8 +3676,8 @@ def _adb_mdns_discover(adb_exe, expected_host=None):
         out = (p.stdout or "") + "\n" + (p.stderr or "")
     except Exception:
         return None
-    # Lines look like: "adb-XYZ._adb-tls-connect._tcp\t192.168.0.3:38123"
-    # or sometimes: "adb-XYZ\t_adb-tls-connect._tcp.\t192.168.0.3:38123"
+    # Lines look like: "adb-XYZ._adb-tls-connect._tcp\t192.168.1.50:38123"
+    # or sometimes: "adb-XYZ\t_adb-tls-connect._tcp.\t192.168.1.50:38123"
     candidates = []
     for line in out.splitlines():
         if "_adb-tls-connect" not in line: continue
@@ -2251,7 +3749,65 @@ def _adb_try_reconnect(adb_exe):
         except Exception:
             return False
 
+def _auto_rebuild_wireless_from_usb(adb_exe, usb_serial) -> tuple[bool, str, list[str]]:
+    """Configures a USB-connected phone for Wireless ADB automatically.
+    Returns (success, message, logs).
+    """
+    logs = [f"Auto-rebuild triggered for USB device: {usb_serial}"]
+    try:
+        # 1. Switch to tcpip 5555
+        r = subprocess.run([adb_exe, "-s", usb_serial, "tcpip", "5555"], capture_output=True, text=True, timeout=10)
+        logs.append(f"Ran tcpip 5555: {(r.stdout or r.stderr or '').strip()}")
+        
+        # 2. Get device IP address
+        r_ip = subprocess.run([adb_exe, "-s", usb_serial, "shell", "ip", "route", "get", "1.1.1.1"], capture_output=True, text=True, timeout=8)
+        out_ip = r_ip.stdout or ""
+        m = re.search(r"src\s+(\d{1,3}(?:\.\d{1,3}){3})", out_ip)
+        ip = m.group(1) if m else None
+        
+        if ip:
+            target = f"{ip}:5555"
+            logs.append(f"Retrieved device IP: {ip}. Connecting to {target}...")
+            # 3. Connect wirelessly
+            r_conn = subprocess.run([adb_exe, "connect", target], capture_output=True, text=True, timeout=8)
+            logs.append(f"Connecting to {target}: {(r_conn.stdout or r_conn.stderr or '').strip()}")
+            
+            # 4. Save to config
+            try:
+                config = load_config()
+                ips = config.get("wireless_ips", []) or []
+                ips = [x for x in ips if not (x or "").startswith(ip + ":")]
+                ips.insert(0, target)
+                config["wireless_ips"] = ips
+                save_config(config)
+                logs.append(f"Saved {target} to config.")
+            except Exception as e:
+                logs.append(f"Failed to save IP to config: {e}")
+                
+            # Verify connection
+            ready, _, _ = _adb_list_devices(adb_exe)
+            if any(target in d for d in ready):
+                return True, f"Successfully built and connected to wireless ADB at {target}!", logs
+            else:
+                return False, f"Switched to TCP/IP mode but failed to connect to {target}.", logs
+        else:
+            # Fallback: try to resolve IP using getprop or ip addr show
+            r_ip2 = subprocess.run([adb_exe, "-s", usb_serial, "shell", "ip", "addr", "show", "wlan0"], capture_output=True, text=True, timeout=8)
+            out_ip2 = r_ip2.stdout or ""
+            m2 = re.search(r"inet\s+(\d{1,3}(?:\.\d{1,3}){3})", out_ip2)
+            ip2 = m2.group(1) if m2 else None
+            if ip2:
+                target2 = f"{ip2}:5555"
+                logs.append(f"Retrieved device IP from wlan0: {ip2}. Connecting to {target2}...")
+                subprocess.run([adb_exe, "connect", target2], capture_output=True, timeout=8)
+                return True, f"Connected to wireless ADB at {target2} (wlan0)!", logs
+            
+            return False, "Could not retrieve IP address from device shell via ip route or ip addr.", logs
+    except Exception as e:
+        return False, f"Error during auto-rebuild: {e}", logs
+
 # Background watchdog that keeps the wireless connection alive.
+_usb_rebuild_cooldown = {} # usb_serial -> last_try_timestamp
 _watchdog_thread = None
 def _adb_watchdog_loop():
     """Polls every 6 s. If the device is not in 'device' state, fire a
@@ -2260,7 +3816,19 @@ def _adb_watchdog_loop():
         try:
             adb_exe = ensure_adb()
             ready, _u, _o = _adb_list_devices(adb_exe)
-            if not ready:
+            
+            # Check if we have USB devices but no wireless devices
+            usb_devices = [d for d in ready if ":" not in d]
+            wireless_devices = [d for d in ready if ":" in d]
+            
+            if usb_devices and not wireless_devices:
+                # Automate USB-to-Wireless transition with 5-min cooldown!
+                usb_serial = usb_devices[0]
+                now_ts = time.time()
+                if now_ts - _usb_rebuild_cooldown.get(usb_serial, 0) > 300:
+                    _usb_rebuild_cooldown[usb_serial] = now_ts
+                    _auto_rebuild_wireless_from_usb(adb_exe, usb_serial)
+            elif not ready:
                 _adb_try_reconnect(adb_exe)
         except Exception:
             pass
@@ -2322,6 +3890,133 @@ def phone_reconnect():
                      "On Android: Developer options › Wireless debugging › "
                      "the 'IP address & Port' on the MAIN screen (not the "
                      "'Pair device with pairing code' one).") if dropped else None}
+
+
+@app.post("/api/v1/phone/usb_diagnose")
+def phone_usb_diagnose():
+    try:
+        adb_exe = ensure_adb()
+    except Exception as e:
+        return {"status": "error", "message": f"ADB unavailable: {e}", "logs": []}
+        
+    logs = []
+    
+    # 1. Kill and restart ADB server to refresh USB connections
+    try:
+        subprocess.run([adb_exe, "kill-server"], capture_output=True, timeout=5)
+        subprocess.run([adb_exe, "start-server"], capture_output=True, timeout=10)
+        logs.append("Restarted ADB server.")
+    except Exception as e:
+        logs.append(f"Failed to restart ADB server: {e}")
+
+    # 2. Get adb devices
+    try:
+        ready, unauth, offline = _adb_list_devices(adb_exe)
+    except Exception as e:
+        ready, unauth, offline = [], [], []
+        logs.append(f"Failed to list ADB devices: {e}")
+
+    # 3. Handle unauthorized devices
+    if unauth:
+        serial = unauth[0]
+        logs.append(f"Found unauthorized device in ADB: {serial}")
+        return {
+            "status": "warning",
+            "connected": False,
+            "message": (
+                f"Phone [{serial}] is connected, but UNAUTHORIZED.\n\n"
+                "Action Required:\n"
+                "1. Unlock your phone's screen.\n"
+                "2. Look for a popup dialog saying 'Allow USB debugging?' or 'Allow access to device data?'.\n"
+                "3. Tick 'Always allow from this computer' and tap 'Allow' or 'OK'.\n"
+                "4. After authorizing, click 'Diagnose USB' again."
+            ),
+            "logs": logs
+        }
+
+    # 4. Handle offline devices
+    if offline:
+        serial = offline[0]
+        logs.append(f"Found offline device in ADB: {serial}")
+        return {
+            "status": "warning",
+            "connected": False,
+            "message": (
+                f"Phone [{serial}] is connected, but reports as OFFLINE in ADB.\n\n"
+                "Troubleshooting Steps:\n"
+                "1. Unplug the USB cable from the phone and plug it back in.\n"
+                "2. Try a different USB cable or a different USB port on your PC.\n"
+                "3. Toggle Developer Options off and on, or toggle USB Debugging off and on in Settings.\n"
+                "4. Restart the phone and try again."
+            ),
+            "logs": logs
+        }
+
+    # 5. Handle ready devices
+    if ready:
+        serial = ready[0]
+        logs.append(f"Found ready ADB device: {serial}")
+        
+        # Check if it is a USB device or wireless
+        if ":" not in serial:
+            # It's a USB device! Try to set tcpip mode and connect wirelessly
+            success, msg, run_logs = _auto_rebuild_wireless_from_usb(adb_exe, serial)
+            return {
+                "status": "ok" if success else "error",
+                "connected": success,
+                "message": msg,
+                "logs": logs + run_logs
+            }
+        else:
+            # Already connected wirelessly
+            return {
+                "status": "ok",
+                "connected": True,
+                "message": f"Phone is already connected wirelessly via {serial}.",
+                "logs": logs
+            }
+            
+    # 6. If no device found in ADB, check Windows PnP for USB devices
+    pnp_devices = []
+    if sys.platform == "win32":
+        try:
+            cmd = ["powershell", "-NoProfile", "-Command",
+                   "Get-PnpDevice | Where-Object { $_.Present -eq $true -and $_.FriendlyName -match 'android|motorola|samsung|google|phone' } | Select-Object -ExpandProperty FriendlyName"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if line and "microphone" not in line.lower():
+                    pnp_devices.append(line)
+        except Exception as e:
+            logs.append(f"Failed to query Windows PnP via PowerShell: {e}")
+
+    # Build diagnostic hint for PnP devices
+    if pnp_devices:
+        dev_names = ", ".join(pnp_devices[:3])
+        message = (
+            f"Windows detected USB device(s) [{dev_names}], but ADB does not see them.\n\n"
+            "Diagnosis & Actions:\n"
+            "1. USB Debugging might be disabled on your phone. Go to Settings > System > Developer Options and verify 'USB Debugging' is enabled.\n"
+            "2. USB connection mode might be set to 'Charge only'. Swipe down on your phone, tap the USB/Charging notification, and select 'File Transfer', 'MTP', or 'MIDI'.\n"
+            "3. The ADB interface driver might be missing or faulty in Windows Device Manager. You may need to download/install the OEM/Motorola USB Driver."
+        )
+    else:
+        message = (
+            "No Android phone detected via USB or ADB.\n\n"
+            "Diagnosis & Actions:\n"
+            "1. Check if the cable is securely connected to both the phone and PC.\n"
+            "2. Make sure you are using a data-transfer USB cable, not a charging-only cable.\n"
+            "3. Try toggling Developer Options and USB Debugging OFF and ON again on your phone.\n"
+            "4. Add your phone's Wireless Debugging IP (e.g. 192.168.1.42:5555) in Egon System Settings."
+        )
+
+    return {
+        "status": "error",
+        "connected": False,
+        "message": message,
+        "logs": logs
+    }
+
 
 _awake_cache = {"at": 0, "val": None}
 
@@ -2433,6 +4128,8 @@ def bookmarks_ack(payload: Dict[str, Any]):
     for (u, _c) in ack_keys:
         if u in h and not h[u].get("b_synced"):
             h[u]["b_synced"] = True
+            _stamp_accountability(h[u], u, "bookmark_ack", "chrome_extension_ack")
+            _record_accountability_event("bookmark_ack", u, h[u], source="chrome_extension_ack")
             changed = True
     if changed:
         save_history(h)
@@ -2494,6 +4191,158 @@ def export_db(format: str):
                     zf.write(fp, os.path.relpath(fp, OUTPUT_DIR()))
     return {"status": "ok", "path": out+"."+format}
 
+# ── Chrome-extension content-harvest sink ──────────────────────────────────
+# Restored 2026-05-27: Antigravity's parallel pruning removed the harvest
+# endpoints that Egon's adapters (lib/adapters/kindle.py, instapaper.py,
+# paperpile.py, plus the Media/Reference pages) actively depend on, and
+# that the v1.7.4 Chrome extension POSTs to. Same behavior as the prior
+# version, including the keep-previous safety from 2026-05-23: an empty
+# or failed harvest NEVER clobbers a good library — it only updates the
+# debug + timestamp so we can see why the harvest came back empty.
+from fastapi import Request as _HReq  # local alias to avoid touching line 24
+
+_KINDLE_LIB_STATE     = os.path.join(OUTPUT_DIR(), "kindle_library_state.json")
+_PAPERPILE_LIB_STATE  = os.path.join(OUTPUT_DIR(), "paperpile_library_state.json")
+_INSTAPAPER_LIB_STATE = os.path.join(OUTPUT_DIR(), "instapaper_library_state.json")
+_YOUTUBE_HISTORY_STATE = os.path.join(OUTPUT_DIR(), "youtube_history_state.json")
+_TVTIME_LIB_STATE     = os.path.join(OUTPUT_DIR(), "tvtime_library_state.json")
+_TVTIME_EPISODES_STATE = os.path.join(OUTPUT_DIR(), "tvtime_episodes_state.json")
+
+
+def _harvest_key(it: dict) -> str:
+    return str(it.get("url") or it.get("id") or it.get("asin")
+               or it.get("title") or "")
+
+
+def _store_harvest(path: str, body: dict) -> dict:
+    """MERGE-by-key, never replace. 2026-06-12 (Bruno: "I want all my data"):
+    a partial harvest used to overwrite the whole library — kindle dropped
+    31 items -> 6 when a quick page visit caught only the first shelf, and
+    YouTube watch history could never accumulate past one page of scrolling.
+    Now incoming items upsert into the existing set (fresh fields win per
+    item) and items the page didn't show this time are KEPT. Additive, like
+    everything else in Egon; a deliberate reset = delete the state file."""
+    body["received_at"] = datetime.now().isoformat(timespec="seconds")
+    incoming = body.get("items") or []
+    merged: dict[str, dict] = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                prev = json.load(f)
+            for it in (prev.get("items") or []):
+                k = _harvest_key(it)
+                if k:
+                    merged[k] = it
+        except Exception:
+            pass
+    prev_n = len(merged)
+    new_n = 0
+    for it in incoming:
+        k = _harvest_key(it)
+        if not k:
+            continue
+        if k not in merged:
+            new_n += 1
+        merged[k] = {**merged.get(k, {}), **it}
+    body["items"] = list(merged.values())
+    body["count"] = len(body["items"])
+    body["merged"] = {"previous": prev_n, "incoming": len(incoming),
+                      "new": new_n}
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False, indent=2)
+    return {"status": "ok", "count": body["count"],
+            "merged": body["merged"]}
+
+
+def _read_harvest(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"status": "no_data", "items": [], "count": 0}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {"status": "ok", **json.load(f)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)[:200]}
+
+
+def _register_harvest_pair(path_const: str, route: str) -> None:
+    """Register a (POST upsert / GET read) endpoint pair against `route`,
+    backed by the file at `path_const`. DRY because there's one per source."""
+    async def _post(req: _HReq):
+        try:
+            body = await req.json()
+            if not isinstance(body, dict) or "items" not in body:
+                return {"status": "error", "error": "bad payload"}
+            return _store_harvest(path_const, body)
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:200]}
+
+    def _get():
+        return _read_harvest(path_const)
+
+    app.post(route)(_post)
+    app.get(route)(_get)
+
+
+_register_harvest_pair(_KINDLE_LIB_STATE,      "/api/v1/kindle/library")
+_register_harvest_pair(_PAPERPILE_LIB_STATE,   "/api/v1/paperpile/library")
+_register_harvest_pair(_INSTAPAPER_LIB_STATE,  "/api/v1/instapaper/library")
+_register_harvest_pair(_YOUTUBE_HISTORY_STATE, "/api/v1/youtube/history")
+_register_harvest_pair(_TVTIME_LIB_STATE,      "/api/v1/tvtime/library")
+_register_harvest_pair(_TVTIME_EPISODES_STATE, "/api/v1/tvtime/episodes")
+
+
+# ── MASTER classifier endpoint — the single brain for ALL surfaces ───────────
+# Bruno 2026-06-15: Inbox/Panop, Navigation/Routster, and any future link-
+# classifying process must call ONE engine (egon's lib/classifier) so a link is
+# never categorised two different ways on two surfaces. JS surfaces (Routster)
+# POST here instead of running their own classifier. Optionally fetches the page
+# for the content/embedding layers when `fetch:true`.
+@app.post("/api/v1/classify")
+async def classify_link(req: _HReq):
+    try:
+        body = await req.json()
+    except Exception:
+        return {"status": "error", "error": "bad json"}
+    url = (body.get("url") or "").strip()
+    if not url:
+        return {"status": "error", "error": "url required"}
+    page_meta = {"title": body.get("title") or "", "abstract": body.get("abstract") or "",
+                 "text": body.get("text") or ""}
+    if body.get("fetch") and not page_meta["text"]:
+        try:
+            m = fetch_page_content(_resolve_terminal_tab_url(url))
+            if m:
+                page_meta = {**m, **{k: v for k, v in page_meta.items() if v}}
+        except Exception:
+            pass
+    try:
+        import lib.classifier as _clf
+        r = _clf.classify(url, page_meta)
+        return {"status": "ok", "url": url, "category": r.category,
+                "action": r.action, "confidence": round(r.confidence, 3),
+                "layer": r.layer, "evidence": r.evidence}
+    except Exception as e:
+        return {"status": "error", "error": str(e)[:200]}
+
+
+# ── Unified-mind endpoints — see external/panop_server/mind_endpoints.py.
+# Module-level side effect: importing it registers /api/v1/mind/* routes
+# on `app` and initializes state/mind.db. Per the additive pattern from
+# the 2026-05-27 reconcile rule — keep main.py lean, add to its tree.
+# Guarded so the SAME canonical main.py also runs as the standalone Panop
+# (Desktop/Panop), which has no egon package tree. In egon this import succeeds
+# and registers /api/v1/mind/*; in the standalone it is simply absent. Bruno 2026-06-20.
+try:
+    from external.panop_server import mind_endpoints  # noqa: F401,E402
+except Exception:
+    mind_endpoints = None
+
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Pass the app OBJECT (not an import string) so this same file launches in
+    # both deployments — egon (run as a package) and standalone Panop (run as a
+    # bare main.py with no `external.panop_server` package). egon's normal start
+    # path doesn't use this block; it imports `app` via scripts/mind_service.py.
+    uvicorn.run(app, host="127.0.0.1", port=int(get_env().get("port", 8000) or 8000))
